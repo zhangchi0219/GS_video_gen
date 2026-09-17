@@ -1,0 +1,45 @@
+{
+  "scene": "riverview-bf16",
+  "machine": "recon-5090",
+  "gpu": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "power_state": "交流电",
+  "frames_used": 12,
+  "frames_dir": "/home/chizh/gsvg/third_party/AnySplat/examples/vrnerf/riverview",
+  "resolution": 448,
+  "dtype": "bf16",
+  "inference_seconds": 1.79,
+  "vram_peak_gb": 6.06,
+  "torch": "2.8.0+cu128",
+  "timestamp": "2026-09-18T03:26:35",
+  "gaussians": 1559959,
+  "sh_bands_saved": 1,
+  "bbox_min": [
+    -4.2614,
+    -0.5936,
+    0.1594
+  ],
+  "bbox_max": [
+    2.8374,
+    0.3585,
+    4.2003
+  ],
+  "center": [
+    -0.712,
+    -0.1176,
+    2.1798
+  ],
+  "opacity_mean_after_sigmoid": 0.3355,
+  "ply_bytes": 106077629,
+  "pred_extrinsic_shape": [
+    1,
+    12,
+    4,
+    4
+  ],
+  "pred_intrinsic_shape": [
+    1,
+    12,
+    3,
+    3
+  ]
+}

@@ -1,0 +1,17 @@
+--- a/src/model/encoder/anysplat.py
++++ b/src/model/encoder/anysplat.py
+@@ -130,8 +130,12 @@
+ 
+     def __init__(self, cfg: EncoderAnySplatCfg) -> None:
+         super().__init__(cfg)
+-        model_full = VGGT.from_pretrained("facebook/VGGT-1B")
+-        # model_full = VGGT()
++        # sawtooth-splat 补丁：原本是 VGGT.from_pretrained("facebook/VGGT-1B")，
++        # 会在运行时联网从 HuggingFace 再拉一份约 5 GB 的权重（国内不可达，CLAUDE.md R3）。
++        # 这里只需要网络结构：aggregator / camera_head / depth_head 随后都会被 AnySplat
++        # 自己的 model.safetensors 整体覆盖，02_reconstruct.py 会断言 missing/unexpected
++        # 均为空，所以不加载 VGGT 官方权重不会让任何参数停留在随机初始化状态。
++        model_full = VGGT()
+         self.aggregator = model_full.aggregator.to(torch.bfloat16)
+         self.freeze_backbone = cfg.freeze_backbone
+         self.distill = cfg.distill

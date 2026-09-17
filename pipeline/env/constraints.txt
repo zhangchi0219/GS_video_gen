@@ -1,0 +1,13 @@
+# 全局版本约束（pip install 时一律带 -c pipeline/env/constraints.txt）
+# 作用：防止 AnySplat 的间接依赖把 torch / numpy / setuptools 悄悄换掉。
+#
+# torch 2.8.0 在 PyPI 上的默认 Linux wheel 就是 CUDA 12.8 构建
+# （requires_dist 里是 nvidia-cuda-runtime-cu12==12.8.90 等），
+# 所以这里不写 +cu128 本地版本标记，直接从清华 PyPI 装即可（18 MB/s）。
+torch==2.8.0
+torchvision==0.23.0
+# numpy 必须 <2：colorspacious 1.1.2 用了 np.row_stack，scikit-video 1.1.11 是 2018 年的包
+numpy==1.26.4
+# setuptools>=82 移除了 pkg_resources，会让 gsplat 的 _backend 在 import
+# torch.utils.cpp_extension 时失败，进而使 AnySplat 整个 import 失败
+setuptools<82

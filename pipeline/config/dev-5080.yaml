@@ -1,0 +1,55 @@
+# DEV 机：台式 RTX 5080 16 GB (sm_120)
+# 角色：M4 导出、M5 前端、M6 部署；只在做 R11 双机一致性验证时才跑 M2
+# 注意：所有涉及显存的数字只在这里改，脚本里不许硬编码。
+machine:
+  name: dev-5080
+  gpu: "NVIDIA GeForce RTX 5080"
+  vram_gb: 16
+  # 台式机不限功耗，但性能数据仍要注明，便于和笔记本对比（R12）。
+  require_ac_power: false   # 台式机不涉及电池降频
+
+paths:
+  # 这两条只在做 R11 双机一致性验证时才需要；平时台式机不装 Python 重建环境
+  anysplat_src: "~/gsvg/third_party/AnySplat"
+  model_dir: "~/gsvg/models/anysplat"
+  # 数据放仓库里（已 gitignore），方便两台机器之间用 NAS/scp 交换
+  data_dir: "/mnt/e/Github/GS_video_gen/pipeline/data"
+
+extract:            # M1 = scripts/01_extract_frames.py
+  target_frames: 64
+  long_edge: 1024           # 注意：AnySplat 内部会再中心裁剪到 448²，这里只是为了控制中间文件大小
+  blur_reject_ratio: 0.15   # 按拉普拉斯方差排序，丢掉最糊的 15%
+  min_interval_sec: 0.15    # 两帧之间的最小时间间隔，避免抽到几乎重复的帧
+
+reconstruct:        # M2 = scripts/02_reconstruct.py
+  # 维护者说训练时视角数不超过 24、可用上限约 64（issue #57）；
+  # 96 帧有质量风险，只作为实验档，用 --max-frames 96 显式覆盖。
+  #
+  # 这里的帧数比 CLAUDE.md 初稿写的「上限 64 帧」低得多，依据是 2026-09-18 在
+  # 笔记本 5090 上实测的显存曲线（bf16、448²、重复帧合成输入，属乐观估计）：
+  #     24 帧 → 9.3 GB，32 帧 → 约 11.5 GB（插值），48 帧 → 15.8 GB，64 帧 → 20.1 GB
+  # 5080 只有 16 GB：48 帧就已经顶到天花板，64 帧根本装不下，会溢出到系统内存、
+  # 耗时翻倍（CLAUDE.md 坑 5）。所以这台机器默认 32 帧，真要跑满再自己加 --max-frames。
+  # 注意 32 这个数是从 5090 上的曲线插值来的，不是在 5080 上实测的；而且 16 GB 没有
+  # 5090 那样的余量，溢出到系统内存时不会报错、只会悄悄慢一倍（坑 5）。
+  # 这台机器第一次跑 M2 时，必须把 summary JSON 里的 vram_peak_gb 和这条曲线对一下
+  # 再决定要不要往上调 —— 这就是 M2 的 R11 一致性检查。
+  max_frames: 32
+  fallback_frames: 24
+  experimental_max_frames: 48   # 约 15.8 GB，已经贴着 16 GB，风险自负
+  resolution: 448           # process_image 的硬编码值，改不了（会中心裁剪，16:9 两侧丢失）
+  dtype: bf16
+  voxelize: true            # 会走 torch_scatter.scatter_max，M0 必须先验证过
+
+post_opt:           # M3 = scripts/03_post_opt.py，默认关闭
+  enabled: false            # 16 GB 上谨慎启用，必须先降分辨率
+  # 不要用 mcmc：sm_120 上有 fast-math 导致 NaN（gsplat PR #1060）
+  # 和 800 万高斯以上非法访存（issue #1040）的报告
+  strategy: default
+  iterations: 3000
+
+export:             # M4 = scripts/04_export.sh（纯 CPU，两台机器都能跑）
+  sh_degree: 1              # 球谐降到 1 阶，移动端友好
+  opacity_threshold: 0.02   # 过滤低不透明度高斯
+  # R8：坐标系旋转参数必须实测确定，AnySplat 的世界坐标系约定未经验证（issue #80）
+  rotate: null

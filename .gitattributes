@@ -1,0 +1,16 @@
+# 这个仓库里的脚本全都在 WSL2 Ubuntu 里执行，所以行尾一律 LF。
+# 在 Windows 侧编辑、或者 git 的 core.autocrlf 转换，都可能塞进 CR，后果：
+#   *.sh   → bash 报 "$'\r': command not found"（CLAUDE.md 坑 3）
+#   *.patch→ patch 命令直接拒绝应用，因为目标文件是 LF
+# 所以这里对所有文本文件统一强制 LF，而不是逐个扩展名去列。
+* text=auto eol=lf
+
+# 二进制资产不做任何行尾转换
+*.ply  binary
+*.sog  binary
+*.webp binary
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.safetensors binary
+*.tar.gz binary

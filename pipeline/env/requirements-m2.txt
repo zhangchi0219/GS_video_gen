@@ -1,0 +1,60 @@
+# M2（前馈重建）的 Python 依赖 —— 由 AnySplat 官方 requirements.txt 裁剪而来。
+#
+# 安装方式（必须带 -c，否则 lightning / e3nn 等会把 torch 或 numpy 换掉）：
+#   source pipeline/env/activate.sh
+#   pip install -c pipeline/env/constraints.txt -r pipeline/env/requirements-m2.txt
+#
+# 相对官方 requirements.txt 的改动，以及每一条的原因：
+#
+# 【删掉的】
+#   gsplat 1.4.0+pt22cu121 的 release wheel
+#       —— 那是按 torch 2.2 / CUDA 12.1 / cp310 编的，没有 sm_120 内核。
+#          改为在本机编译 gsplat 1.5.3：bash pipeline/scripts/00b_build_gsplat.sh
+#   xformers==0.0.24
+#       —— 它锁 torch==2.2.0，会把 torch 拉回没有 sm_120 的 cu121 版本。
+#          改为单独执行：pip install --no-deps xformers==0.0.32.post2
+#   torch_scatter==2.1.2
+#       —— PyPI 上只有源码包。改为从 PyG 的 wheel 源装，且必须通过 M0 的 gate-scatter：
+#          pip install --only-binary=torch-scatter "torch-scatter==2.1.2+pt28cu128" \
+#              -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
+#   git+pytorch3d
+#       —— 只在 src/loss 里用到，推理不 import，而且是整条依赖链里最难编的一个。
+#   moviepy / moviepy==1.0.3（官方列了两遍）
+#       —— 推理路径不 import；model_wrapper 里的 moviepy.editor 属于训练路径。
+#          需要官方 inference.py 的 save_interpolated_video 写 mp4 时再加 imageio-ffmpeg
+#          （本机已用 apt 装了 ffmpeg 6.1.1）。
+#   open3d / gradio / wandb / lpips / timm / black / ruff / pydantic / tabulate /
+#   svg.py / scikit-image / colorama / beartype
+#       —— 按推理的 import 链静态追踪没有用到（置信度中等）。
+#          装完必须先跑一次 `import src.model.model.anysplat` 验证，缺谁补谁。
+#
+# 【改版本的】
+#   numpy==1.25.0 → 由 constraints.txt 固定为 1.26.4（1.25.0 没有 cp312 wheel）。
+#   opencv-python / plyfile / scipy 固定在还支持 numpy 1.x 的版本：
+#       它们更新的版本都要求 numpy>=2，而 colorspacious 1.1.2 用了 np.row_stack、
+#       scikit-video 1.1.11 是 2018 年的包，都需要 numpy<2。
+
+# --- 经由包的 __init__ 链被推理代码 import，必须保留 ---
+lightning
+hydra-core
+jaxtyping
+einops
+colorspacious
+matplotlib
+imageio
+dacite
+e3nn
+tqdm
+wheel
+Pillow
+huggingface_hub
+safetensors
+scikit-video
+
+# --- 必须钉住版本：更新的版本要求 numpy>=2 ---
+opencv-python==4.11.0.86
+plyfile==1.1.3
+scipy==1.16.3
+
+# --- 本项目自己的脚本需要（读 config/*.yaml）---
+PyYAML

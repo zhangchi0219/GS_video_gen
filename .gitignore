@@ -1,0 +1,30 @@
+pipeline/models/
+pipeline/third_party/
+
+# data/ 下只让几 KB 的元数据 JSON 进 git（PLY / SOG / 帧序列 / 编译日志都不进）。
+# 注意写法：一旦用 `pipeline/data/` 整体排除目录，git 就不再遍历其中内容，
+# 后面的 `!...*.json` 会完全失效 —— 所以这里排除的是目录"里的内容"（/**），
+# 再逐级把需要的目录和文件放回来。
+pipeline/data/**
+!pipeline/data/ply/
+!pipeline/data/sog/
+!pipeline/data/ply/*.json
+!pipeline/data/sog/*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+
+# 编译日志
+*.build.log
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
