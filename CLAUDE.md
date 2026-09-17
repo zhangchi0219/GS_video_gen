@@ -168,9 +168,15 @@ sawtooth-splat/
 
 ## 7. 推进顺序（每步完成后停下来汇报，再进下一步）
 
-1. **笔记本环境验证**：WSL2 内跑通 M0 自检（torch 可见 5090、能编译 gsplat）→ 汇报版本组合。
-2. **官方示例跑通**：用 AnySplat 自带示例图片跑推理，得到 PLY。
-3. **台式机最小环境**：只装 Node + splat-transform；PLY → SOG → 用 Spark 官方 getting-started 示例
+1. **笔记本环境验证** —— ✅ **2026-09-18 完成**（提交 `7290cc7`）。
+   M0 三道硬性门全过：torch 2.8.0 在 5090 上 capability (12,0)、arch_list 含 sm_120；
+   gsplat 1.5.3 本机编译 53 秒、含 backward 的光栅化通过；torch-scatter 的 PTX JIT
+   与原生算子逐位一致。版本组合见 `pipeline/README.md`，自检输出见 `pipeline/env/ENVIRONMENT.md`。
+2. **官方示例跑通** —— ✅ **2026-09-18 完成**（提交 `7290cc7`）。
+   riverview（12 帧）：推理 1.7 秒、显存 6.82 GB、156 万高斯、scene scale 0.946，
+   权重加载断言 missing/unexpected 均为空，PLY 各字段分布校验通过。
+   只打了一个补丁（VGGT 不联网）；opacity 转 logit 在自己的脚本里做。
+3. **台式机最小环境** —— ⬅️ **下一步**。只装 Node + splat-transform；PLY → SOG → 用 Spark 官方 getting-started 示例
    （改为本地 npm 依赖）加载验证。
 4. **自采数据**：拍一段 15 秒视频，笔记本走 M1→M3，台式走 M4→M5。
 5. **双机一致性检查**：同一份帧序列在两台上各跑一次 M2（台式用 64 帧 preset），
