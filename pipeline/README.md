@@ -105,6 +105,8 @@ bash pipeline/scripts/00c_fetch_anysplat.sh      # 源码 + 补丁 + 权重（�
 | `scripts/00c_fetch_anysplat.sh` | 取源码（固定 commit）+ 权重（固定 revision，校验 sha256）+ 打补丁 |
 | `scripts/02_reconstruct.py` | M2 前馈重建：帧目录 → PLY + 统计 JSON，含 OOM 降档建议 |
 | `scripts/02b_inspect_ply.py` | 交给 splat-transform 之前检查 PLY 各字段的取值分布 |
+| `scripts/04_export.sh` | M4 压缩导出：PLY → bundled `.sog` + 前端用的元数据 JSON |
+| `scripts/04_summary.mjs` | 把 splat-transform 的 `--stats json` 整理成元数据（挑掉它算错的字段） |
 | `patches/*.patch` | 对 AnySplat 源码的改动，由 `00c_fetch_anysplat.sh` 应用 |
 | `env/activate.sh` | **所有** Python 命令的入口，统一环境变量 |
 | `env/constraints.txt` | 全局版本约束，每次 `pip install` 都要带 `-c` |
@@ -170,6 +172,63 @@ bash pipeline/scripts/00c_fetch_anysplat.sh      # 源码 + 补丁 + 权重（�
 
 对照 CLAUDE.md 的验收标准 1（30～60 帧推理 < 2 分钟）：64 帧只用 9.4 秒，余量很大；
 即便真实场景的高斯多几倍，耗时也远到不了 2 分钟。
+
+## M4 压缩导出（2026-09-18，笔记本 5090）
+
+工具是 `@playcanvas/splat-transform` 3.4.2，**钉在 `pipeline/package.json` 里当 devDependency**，
+不按 CLAUDE.md M4 原文那样全局装 —— 全局装的版本不受 lock 约束，换台机器就会悄悄漂移，
+与 §5「依赖锁定」冲突。装法和用法：
+
+```bash
+cd pipeline && npm ci
+bash scripts/04_export.sh --scene riverview --publish
+```
+
+riverview（12 帧官方样例）的实测：
+
+| 指标 | 值 |
+|---|---|
+| 输入 PLY | 101 MB / 1,559,959 高斯 / 0 阶球谐 |
+| 输出 SOG | **16.00 MB**（bundled 单文件），压缩比 6.3× |
+| 耗时 | 3.4 s（GPU 适配器选 5090） |
+| 峰值内存 | 约 630 MB（纯 CPU 侧） |
+
+**这个 16 MB 不是对验收标准 2（< 30 MB）的结论**：riverview 是 12 帧 448² 的官方样例，
+它只证明工具链通。真实自采场景的高斯数会高得多（第 4 步重测）。
+
+低不透明度过滤是唯一有效的体积杠杆，`-m`（Morton 重排）对体积无影响，SOG 编码内部已经重排过：
+
+| 参数 | 高斯数 | SOG 大小 |
+|---|---|---|
+| 不过滤 | 1,559,959 | 16.00 MB |
+| `--min-opacity 0.02` | — | 14.71 MB |
+| `--min-opacity 0.1` | 1,020,468（65.4%） | 10.19 MB |
+
+默认**不过滤**：该不该砍要看渲染效果，不是看体积表。
+
+### splat-transform 3.4.2 的实际 CLI 与 CLAUDE.md 初稿的出入
+
+CLAUDE.md M4 那几个 flag 是规划时凭印象写的，实际对不上，已按下表为准：
+
+| CLAUDE.md 写的 | 实际 | 备注 |
+|---|---|---|
+| `--summary` | **不存在**，实际是 `--stats [text\|json]` / `--info [text\|json]` | 是 action 不是 flag，结果打到 stdout |
+| `--rotate` | ✅ `-r, --rotate <x,y,z>` | 欧拉角，单位是**度** |
+| 低不透明度过滤 | `-V, --filter-value <name,cmp,value>` | 阈值用 sigmoid 之后的 0~1，不是 logit，见下 |
+| 球谐降阶 | ✅ `-H, --filter-harmonics <0\|1\|2\|3>` | 本项目 PLY 本就只有 DC，是空操作 |
+| bundled `.sog`（R7） | ✅ 输出 `.sog` 即 bundled 单文件 | 输出 `meta.json` 才是 unbundled 目录 |
+
+另外 `--list-gpus` 的适配器**索引跨机不一致**（这台笔记本 [0] 是 Intel 核显、[1] 才是 5090），
+所以 `04_export.sh` 按名字挑独显而不是把数字写死。
+
+### 两条踩过的坑（细节见 CLAUDE.md 坑 6、坑 7）
+
+1. **splat-transform 读 PLY 时会先解码**：`opacity` 过 sigmoid、`scale` 过 exp。
+   所以 `-V opacity,gt,0.1` 的阈值是人类可读的 0~1。已用直接读 PLY 的方式逐位验证过：
+   `sigmoid(raw) > 0.1` 的数量是 1,020,468，与 `-V` 的结果完全相同。
+2. **它 `--stats` 里的 `mean` / `stdDev` 对需要解码的列是错的**，算的是 `decode(mean(raw))`
+   而不是 `mean(decode(raw))`。`min` / `max` / `median` 因为在单调变换下保序所以可信。
+   `04_summary.mjs` 因此只取 median，不取 mean。
 
 ## 注意事项
 

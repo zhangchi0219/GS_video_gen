@@ -21,6 +21,12 @@ __pycache__/
 node_modules/
 web/dist/
 
+# web 的 splat 资产：二进制一律不进 git（butterfly.* 是一次性下载的官方参照，
+# riverview.sog 台式机自己跑 04_export.sh 就能生成）。同名 .json 只有几 KB，
+# 是前端定相机要用的，必须进 git —— 写法同 pipeline/data，先排内容再放回来。
+web/public/splats/**
+!web/public/splats/*.json
+
 # 编译日志
 *.build.log
 

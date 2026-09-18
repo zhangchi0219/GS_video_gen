@@ -115,9 +115,15 @@ sawtooth-splat/
 - 只在笔记本 5090 上跑。
 
 ### M4 压缩导出（04）— **纯 CPU，两台机器都可以跑**
-- 用 `@playcanvas/splat-transform`（MIT，`npm install -g @playcanvas/splat-transform`）把 PLY 转 `.sog`。
-- 同时输出 `--summary` 统计（高斯数量、包围盒）写进 `data/sog/<scene>.json`，供前端定相机初始位置。
-- 坐标系修正、球谐降阶、低不透明度过滤都在这一步用 splat-transform 的 action 做完。
+- 用 `@playcanvas/splat-transform`（MIT）把 PLY 转 `.sog`。**钉在 `pipeline/package.json` 里当
+  devDependency 用 `npm ci` 装**，不用 `npm install -g`——全局装的版本不受 lock 约束，
+  换机就漂移，与 §5「依赖锁定」冲突。（v2 初稿写的是全局装，2026-09-18 改。）
+- 统计用 `--stats json`（不是初稿写的 `--summary`，那个 flag 不存在），由
+  `04_summary.mjs` 整理成 `data/sog/<scene>.json`，供前端定相机初始位置。
+  **注意它的 `mean`/`stdDev` 对 opacity、scale 这些需要解码的列是错的**，只能用
+  `min`/`max`/`median`，见坑 6。
+- 坐标系修正（`-r`）、球谐降阶（`-H`）、低不透明度过滤（`-V opacity,gt,N`，阈值是
+  sigmoid 之后的 0~1）都在这一步用 splat-transform 的 action 做完。
 - 术语：**SOG**——把高斯属性重排后编码成 WebP 纹理的超压缩格式，比原始 PLY 小一个量级，Spark 原生支持。
 
 ### M5 网页渲染（web/）
@@ -176,8 +182,13 @@ sawtooth-splat/
    riverview（12 帧）：推理 1.7 秒、显存 6.82 GB、156 万高斯、scene scale 0.946，
    权重加载断言 missing/unexpected 均为空，PLY 各字段分布校验通过。
    只打了一个补丁（VGGT 不联网）；opacity 转 logit 在自己的脚本里做。
-3. **台式机最小环境** —— ⬅️ **下一步**。只装 Node + splat-transform；PLY → SOG → 用 Spark 官方 getting-started 示例
-   （改为本地 npm 依赖）加载验证。
+3. **最小 web 环境 + M4 导出** —— **2026-09-18 代码完成，差台式机上的实机确认**。
+   工具链全部钉版本进 lock（`pipeline/package.json` 只有 splat-transform 3.4.2；
+   `web/` 是 Vite 8 + React 19 + three 0.186 + Spark 2.2）。riverview 的 PLY → SOG 走通：
+   101 MB → **16.00 MB**、3.4 秒；`SplatViewer.tsx` 类型检查和 `vite build` 都过。
+   **这一步是在笔记本 5090 上做的**（M4/M5 都是 CPU/浏览器的活，CLAUDE.md M4 本就写明两台都能跑），
+   代码和 lock 全部进 git。**台式 5080 的 `npm ci` + 实机确认按决定先搁置**（2026-09-18），
+   补做那一次才算真正的双机验证（R11）。渲染效果的肉眼确认也还欠着（Chrome 扩展当时没连上）。
 4. **自采数据**：拍一段 15 秒视频，笔记本走 M1→M3，台式走 M4→M5。
 5. **双机一致性检查**：同一份帧序列在两台上各跑一次 M2（台式用 64 帧 preset），
    比对高斯数量与 PSNR，差异过大说明环境不一致，回到 R11。
@@ -230,6 +241,41 @@ sawtooth-splat/
 - 原因：WSL 是 NAT 模式且用不上 Windows 侧的代理，git 的 HTTPS 传输被卡住。
 - 修复：改用 `https://codeload.github.com/<owner>/<repo>/tar.gz/<commit-sha>`（实测 3.7 MB/s），
   按 commit 固定后解压到 `~/gsvg/third_party/AnySplat`，补丁文件进 git。
+
+### DEV 侧（M4 导出 / M5 网页）— 2026-09-18
+
+这一节的坑与机器无关（纯 CPU / 浏览器），虽然是在笔记本 5090 上撞到的。
+
+**坑 6：splat-transform 的 `--stats` 里，`mean` 和 `stdDev` 对需要解码的列是错的**
+- 症状：对同一份 riverview.ply，`--stats json` 报 opacity 的 mean = 0.2711，
+  而 `02_reconstruct.py` 和直接读 PLY 算出来都是 0.3353。`scale_1` 更离谱：
+  报 stdDev = 173.368，而那一列的 max 才 0.00148，差五个量级。
+- 原因：splat-transform 读 PLY 时会先把存储值解码（`opacity` 过 sigmoid、`scale` 过 exp），
+  但它算的是 `decode(mean(raw))` 而不是 `mean(decode(raw))`。验证：
+  `sigmoid(-0.9889) = 0.27112`，正是它报的那个数，而 -0.9889 就是 opacity 原始列的均值。
+  `min`/`max`/`median` 在单调变换下保序，所以是对的；不需要解码的列（x/y/z）则五个量全对。
+- 修复：`04_summary.mjs` 只取 `min`/`max`/`median`，不取 `mean`/`stdDev`。
+- 附带结论（这条是好消息）：既然它确实做了解码，`-V opacity,gt,0.1` 的阈值就是人类可读的
+  0~1，**不用换算成 logit**。已逐位验证：直接读 PLY 算 `sigmoid(raw) > 0.1` 得 1,020,468 个，
+  与 `-V` 的输出完全相同。
+
+**坑 7：GPU 适配器索引跨机不一致，不能写进配置**
+- 症状：`splat-transform --list-gpus` 在这台笔记本上列出 `[0] Intel(R) Graphics`、
+  `[1] NVIDIA GeForce RTX 5090 Laptop GPU`、`[2] Microsoft Basic Render Driver`。
+  把 `-g 1` 写死，换台机器就可能选到核显或软件渲染。
+- 修复：`04_export.sh` 跑一次 `--list-gpus`，按**名字**正则挑独显，挑不到就交给 splat-transform 自己选。
+
+**坑 8：Vite 8 的 `manualChunks` 只认函数形式**
+- 症状：`build.rollupOptions.output.manualChunks` 写成 `{ three: ['three'] }` 时
+  `tsc --noEmit` 报 `TS2769 ... 'three' does not exist in type 'ManualChunksFunction'`。
+- 修复：改成 `manualChunks(id) { if (id.includes('node_modules/three')) return 'three'; ... }`。
+- 遗留：改完能编译，但**分包并没有真正生效**——`three` chunk 只有 19.8 kB，`spark` 有 3.0 MB，
+  three 多半被并进了 spark 的 chunk（spark 依赖它）。不影响功能，M6 实测加载时间时再处理。
+
+**坑 9：用 Bash 的 heredoc 写长 TSX 文件会被 shell 解析卡住**
+- 症状：`cat > SplatViewer.tsx <<'TSX'` 写一个 300 行、含大量单引号和模板字符串的文件时，
+  报 `unexpected EOF while looking for matching '`，文件没写成。短文件（< 150 行）没问题。
+- 修复：这类文件直接用 Write 工具写，别走 heredoc。
 
 ## 9. 明确不做的事
 

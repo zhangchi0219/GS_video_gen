@@ -1,0 +1,15 @@
+{
+  "name": "sawtooth-splat-pipeline",
+  "version": "0.0.0",
+  "private": true,
+  "description": "M4 导出侧工具链：PLY → SOG。只钉一个 devDependency，用 npm ci 复现（CLAUDE.md §5 依赖锁定）。",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "export": "bash scripts/04_export.sh"
+  },
+  "devDependencies": {
+    "@playcanvas/splat-transform": "3.4.2"
+  }
+}
