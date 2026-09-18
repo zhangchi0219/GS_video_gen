@@ -102,6 +102,68 @@ R8（坐标系翻转）的**判断工具**，不是最终方案。Spark 官方 g
 顺带一提 riverview 本身就很暗：输入的 12 帧平均亮度只有 0.148（0~1），
 而 PLY 里 f_dc 的均值是 0.144，两者吻合 —— 画面暗是场景如此，不是颜色约定错了。
 
+## 部署（M6）
+
+三个文件配套使用：
+
+| 文件 | 作用 |
+|---|---|
+| `nginx-sawtooth.conf` | 站点配置。上线时把 `server{}` 里的几个 location 搬进 BT Panel，`root` 换成站点目录 |
+| `deploy.sh` | 构建 + rsync。**默认 dry-run**，要显式加 `--go` 才真传 |
+| `verify-deploy.sh` | 部署自检，把 CLAUDE.md 对静态站点的硬要求逐条验掉。本地和生产跑同一份 |
+
+```bash
+bash web/deploy.sh /var/www/sawtooth            # 先看要传什么
+bash web/deploy.sh /var/www/sawtooth --go       # 真传
+bash web/verify-deploy.sh http://127.0.0.1:8080 # 自检
+```
+
+`--lean` 只传主场景，把 `riverview.sog` 和 `butterfly.sog` 留在本地（44 MB → 22 MB），
+但保留最小的那个官方参照 `butterfly.spz`，线上出问题时仍能用三段式诊断链定位。
+
+### 配置里最要紧的一条
+
+`.sog` 必须 `gzip off`。两个理由，**第二个更要命**：
+
+1. SOG 内部已经是 WebP 压缩，再压一遍几乎压不动，纯耗 CPU（CLAUDE.md M6 明写）
+2. **nginx 一旦 gzip 了响应，就会丢掉 `Accept-Ranges` 并拒绝 Range 请求** ——
+   而 Range 是验收标准 4（为后续 `.RAD` 流式加载预留）的前提
+
+所以「不要 gzip」和「支持 Range」这两条其实是同一件事，`verify-deploy.sh` 把它们连着测。
+
+### 本地实测结果（2026-09-18，nginx 1.24 / WSL2）
+
+自检 10 项全过：`.sog` 的 Content-Type 为 `application/octet-stream`、未被 gzip、
+Range 返回 `206 + Content-Range`；JS/CSS 有 gzip；三个 woff2 都没被重复压缩；
+`index.html` 是 `no-cache`；没有重复的响应头。
+
+首屏传输量 **18.53 MB**：
+
+| | 传输量 |
+|---|---|
+| 代码（HTML+CSS+JS，gzip 后） | 1.07 MB |
+| 三个自托管字体 | 0.18 MB |
+| `test.sog`（不可压缩） | 17.3 MB |
+
+估算 4G 3 MB/s 约 6.2 秒、1 MB/s 约 18.5 秒。**真正的瓶颈是 splat 资产本身**，
+代码只占 6%。要压首屏时间，方向是减小 `.sog`（`--min-opacity` 过滤、降低帧数），
+而不是折腾代码分包。
+
+生产构建在浏览器里实测：页面 292 ms 就绪，三个自托管字体全部加载成功，渲染正常。
+**4G 实测还没做** —— 要上线或局域网访问后用手机实测（验收标准 3）。
+
+### 本地起 nginx 测试时踩的两个坑
+
+- **站点目录别放 `/home/<user>/` 下面**。nginx 的 worker 以 `www-data` 跑，而 `/home/<user>`
+  默认权限是 750，进不去，表现为莫名其妙的 403。放 `/var/www/` 就好。
+- **`expires` 和 `add_header Cache-Control` 同时用会产生两个 Cache-Control 头**。
+  语义含糊，配置也不好 review。要么只用 `expires`，要么 `expires off` + 只用 `add_header`
+  （本配置选了后者，因为 `immutable` 只能靠 `add_header` 给）。
+
+另外从 Windows 侧访问 WSL 里的 nginx，`localhost:8080` 可能不通（系统代理没镜像到 WSL），
+用 `hostname -I` 拿到的 WSL IP 直连即可；浏览器若也走系统代理，就改用
+`npm run preview` 在 Windows 侧验证构建产物。
+
 ## 已知问题
 
 - **分 chunk 没真正生效**：`vite build` 出来 `three` chunk 只有 19.8 kB，而 `spark` 有 3.0 MB

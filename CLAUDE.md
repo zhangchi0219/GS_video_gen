@@ -214,7 +214,14 @@ sawtooth-splat/
 5. **双机一致性检查**：同一份帧序列在两台上各跑一次 M2（台式用 64 帧 preset），
    比对高斯数量与 PSNR，差异过大说明环境不一致，回到 R11。
 6. **单文件 demo 打磨**：相机限制、加载进度、错误提示。
-7. **部署**：BT Panel 静态目录 + Nginx 配置，国内 4G 网络实测加载时间。
+7. **部署** —— **2026-09-18 本地验证完成，尚未上线**。配置与脚本三件套在
+   `web/`：`nginx-sawtooth.conf`（站点配置）、`deploy.sh`（构建+rsync，默认 dry-run）、
+   `verify-deploy.sh`（自检，本地和生产跑同一份）。本地 nginx 1.24 上自检 10 项全过，
+   其中 **Range 返回 206 + Content-Range → 验收标准 4 达标**。
+   首屏传输量 **18.53 MB**（代码 gzip 后仅 1.07 MB、字体 0.18 MB、`.sog` 17.3 MB），
+   估算 4G 3 MB/s 约 6.2 秒。**瓶颈完全在 splat 资产，代码只占 6%** ——
+   要压加载时间应该去减小 `.sog`，而不是折腾代码分包。
+   **还差**：上线到 BT Panel，以及用手机在国内 4G 上实测（验收标准 3）。
 
 ## 8. 坑记录（症状 → 原因 → 修复；每遇到一个就追加，注明是哪台机器）
 
@@ -355,6 +362,23 @@ sawtooth-splat/
 - 修复：`cfg_get` 里 `gsub(/^["']|["']$/, "", line)` 把引号剥掉。
 - 自检：导出后对比 PLY 与 SOG 的包围盒 —— 绕 X 转 180° 后 y/z 应当取反并互换 min/max，
   相机 up 应当从 (0,-1,0) 变成 (0,1,0)。对不上就是没生效。
+
+**坑 16：nginx 的 `gzip` 一旦作用到响应上，Range 请求就会失效**
+- 这条把 M6 的两条要求连成了一件事：「`.sog` 不要 gzip」和「要支持 Range（验收标准 4）」
+  并不是两个独立的配置项 —— 压缩过的响应 nginx 不会发 `Accept-Ranges`，也会拒绝 206。
+- 所以 `location /splats/` 里的 `gzip off` 是**功能性**的，不只是省 CPU。
+  `web/verify-deploy.sh` 把这两项连着测，就是为了防止哪天有人「顺手」把它打开。
+
+**坑 17：`expires` 和 `add_header Cache-Control` 同时用，会发出两个 Cache-Control 头**
+- 症状：`curl -I` 能看到两行 `Cache-Control`（一行来自 `expires` 自动生成，一行来自
+  `add_header`）。不报错，浏览器也大致能work，但语义含糊、配置难 review。
+- 修复：`expires off` 关掉自动生成，只留 `add_header`（`immutable` 也只能这么给）。
+- 顺带：**nginx 静态文件本来就会发 `Accept-Ranges`**，再手动 `add_header` 同样会重复。
+
+**坑 18：nginx 站点目录放在 `/home/<user>/` 下会 403**
+- 原因：worker 以 `www-data` 身份跑，而 `/home/<user>` 默认权限 750，进不去。
+  403 出现在最外层，很容易误以为是配置写错了。
+- 修复：站点放 `/var/www/`（BT Panel 用的 `/www/wwwroot/` 同理）。
 
 ## 9. 明确不做的事
 
