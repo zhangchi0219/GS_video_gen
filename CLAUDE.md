@@ -104,7 +104,8 @@ sawtooth-splat/
   也必定丢掉那个比例，实测在 riverview 的 12 张真实照片上误杀了 2 张。
   （`blur_reject_ratio` 因此已从 config 删除。）
 - 裁剪：默认 `crop: square`，提前裁成正方形对齐模型真正看到的画面；
-  已验证与 AnySplat 自己裁的区域等价。主体偏一侧时用 `--crop-center-x` 调。
+  已验证与 AnySplat 自己裁的区域等价。主体偏一侧时用 `--crop-center` 调 ——
+  横构图裁宽度、竖构图裁高度，参数自动作用在实际被裁的那个轴上。
 - 统一 resize 到长边 1024；帧数上限读 config 的 `extract.target_frames`。
 - 输出：`data/frames/<scene>/000.jpg …` 加一份 `_extract.json`（逐帧时间戳与清晰度）。
 - 术语：**拉普拉斯方差**——对图像做二阶导数，方差越小说明边缘越少、越糊，是最简单的模糊检测。

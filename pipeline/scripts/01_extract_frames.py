@@ -28,7 +28,8 @@
    所以 16:9 的输入水平方向只剩 448 / (448 × 16/9) = 56%，左右各丢 22%；4:3 留 75%；1:1 不丢。
    与其让它盲裁，不如在这里可控地裁：模型拿到正方形后 crop 变成空操作、没有额外损失，
    而且中间文件就是模型的真实输入，能直接看见它到底看到了什么。
-   主体偏向一侧时用 `--crop-center-x` 调裁剪窗口的水平位置。
+   主体偏向一侧时用 `--crop-center` 调裁剪窗口的位置（横构图调水平、竖构图调垂直，
+   参数自动作用在被裁的那个轴上）。
 
 术语：**拉普拉斯方差**——对图像做二阶导数，方差越小说明边缘越少、越糊，
 是最简单也最常用的模糊检测指标。它对分辨率敏感，所以这里统一缩到同一尺寸再算分。
@@ -100,13 +101,15 @@ def probe_video(path: Path) -> dict:
     }
 
 
-def build_vf(rate: float, crop: str, center_x: float, long_edge: int) -> str:
+def build_vf(rate: float, crop: str, center: float, long_edge: int) -> str:
     """拼 ffmpeg 的 -vf。裁剪和缩放都交给 ffmpeg 一次做完，避免二次重采样。"""
     parts = [f"fps={rate:.6f}"]
     if crop == "square":
         # 滤镜参数里的逗号要转义，否则 ffmpeg 会当成参数分隔符。
         s = r"min(iw\,ih)"
-        parts.append(f"crop={s}:{s}:(iw-{s})*{center_x}:(ih-{s})/2")
+        # x 和 y 用同一个公式：被裁的那个轴上 (边长-S) > 0，另一个轴上恰好是 0，
+        # 所以不用判断横竖，center 自动作用在**实际被裁的**那个轴上。
+        parts.append(f"crop={s}:{s}:(iw-{s})*{center}:(ih-{s})*{center}")
         parts.append(f"scale={long_edge}:{long_edge}")
     else:
         parts.append(
@@ -116,11 +119,11 @@ def build_vf(rate: float, crop: str, center_x: float, long_edge: int) -> str:
 
 
 def extract_candidates(video: Path, tmp_dir: Path, rate: float,
-                       crop: str, center_x: float, long_edge: int) -> list[Path]:
+                       crop: str, center: float, long_edge: int) -> list[Path]:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     cmd = [need("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
            "-i", str(video),
-           "-vf", build_vf(rate, crop, center_x, long_edge),
+           "-vf", build_vf(rate, crop, center, long_edge),
            "-q:v", "2",          # JPEG 质量，2 是接近无损的一档
            "-fps_mode", "passthrough",
            str(tmp_dir / "cand_%05d.jpg")]
@@ -130,7 +133,7 @@ def extract_candidates(video: Path, tmp_dir: Path, rate: float,
 
 
 def prepare_from_dir(src_dir: Path, tmp_dir: Path,
-                     crop: str, center_x: float, long_edge: int) -> list[Path]:
+                     crop: str, center: float, long_edge: int) -> list[Path]:
     """图片目录输入：先统一裁剪/缩放成候选，后面的流程和视频完全一致。"""
     import cv2
     files = sorted(p for p in src_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
@@ -146,7 +149,7 @@ def prepare_from_dir(src_dir: Path, tmp_dir: Path,
             continue
         sizes.add(img.shape[:2])
         dst = tmp_dir / f"cand_{i:05d}.jpg"
-        cv2.imwrite(str(dst), crop_resize(img, crop, center_x, long_edge),
+        cv2.imwrite(str(dst), crop_resize(img, crop, center, long_edge),
                     [cv2.IMWRITE_JPEG_QUALITY, 95])
         out.append(dst)
     if len(sizes) > 1:
@@ -154,18 +157,20 @@ def prepare_from_dir(src_dir: Path, tmp_dir: Path,
     return out
 
 
-def crop_resize(img, crop: str, center_x: float, long_edge: int):
+def crop_resize(img, crop: str, center: float, long_edge: int):
     import cv2
     h, w = img.shape[:2]
     if crop == "square":
         size = min(w, h)
-        x = int(round((w - size) * center_x))
-        y = (h - size) // 2
+        # 和 build_vf 里一样：被裁的轴上 (边长-size) > 0，另一个轴上恰好是 0，
+        # 所以同一个公式就能让 center 自动作用在实际被裁的那个轴上（横竖构图都对）。
+        x = int(round((w - size) * center))
+        y = int(round((h - size) * center))
         img = img[y:y + size, x:x + size]
         return cv2.resize(img, (long_edge, long_edge), interpolation=cv2.INTER_AREA)
     scale = long_edge / max(w, h)
     if scale >= 1:
-        return img
+        return img  # 本来就比 long_edge 小就不放大，放大不会凭空生出细节
     return cv2.resize(img, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
 
 
@@ -232,8 +237,9 @@ def main() -> int:
     ap.add_argument("--target-frames", type=int, default=None)
     ap.add_argument("--long-edge", type=int, default=None)
     ap.add_argument("--crop", choices=("square", "none"), default=None)
-    ap.add_argument("--crop-center-x", type=float, default=None,
-                    help="正方形窗口中心在原图宽度上的相对位置，0~1，默认 0.5")
+    ap.add_argument("--crop-center", type=float, default=None,
+                    help="正方形窗口中心在**被裁那个轴**上的相对位置，0~1，默认 0.5 居中。"
+                         "横构图裁宽度、竖构图裁高度，这个参数自动作用在对应的轴上。")
     ap.add_argument("--candidates-per-window", type=int, default=None)
     ap.add_argument("--blur-floor-factor", type=float, default=None)
     ap.add_argument("--min-interval-sec", type=float, default=None)
@@ -250,13 +256,13 @@ def main() -> int:
     target = int(pick(args.target_frames, "target_frames", 64))
     long_edge = int(pick(args.long_edge, "long_edge", 1024))
     crop = str(pick(args.crop, "crop", "square"))
-    center_x = float(pick(args.crop_center_x, "crop_center_x", 0.5))
+    center = float(pick(args.crop_center, "crop_center", 0.5))
     cpw = int(pick(args.candidates_per_window, "candidates_per_window", 5))
     floor_factor = float(pick(args.blur_floor_factor, "blur_floor_factor", 0.30))
     min_interval = float(pick(args.min_interval_sec, "min_interval_sec", 0.15))
 
-    if not 0.0 <= center_x <= 1.0:
-        raise SystemExit(f"错误：--crop-center-x 要在 0~1 之间，给的是 {center_x}")
+    if not 0.0 <= center <= 1.0:
+        raise SystemExit(f"错误：--crop-center 要在 0~1 之间，给的是 {center}")
     if target < 1:
         raise SystemExit(f"错误：target_frames 必须 >= 1，给的是 {target}")
 
@@ -271,7 +277,7 @@ def main() -> int:
         shutil.rmtree(tmp_dir)
 
     log(f"场景 {args.scene}｜输入 {src}")
-    log(f"参数：target={target} long_edge={long_edge} crop={crop}@{center_x} "
+    log(f"参数：target={target} long_edge={long_edge} crop={crop}@{center} "
         f"候选/窗口={cpw} 地板系数={floor_factor} 最小间隔={min_interval}s")
 
     is_video = src.is_file() and src.suffix.lower() in VIDEO_SUFFIXES
@@ -295,11 +301,11 @@ def main() -> int:
             rate = info["fps"]
             warn(f"视频只有 {info['fps']:.1f}fps，凑不满 {want} 个候选；"
                  f"降到按原帧率抽（约 {int(info['fps'] * info['duration'])} 帧）")
-        cand_files = extract_candidates(src, tmp_dir, rate, crop, center_x, long_edge)
+        cand_files = extract_candidates(src, tmp_dir, rate, crop, center, long_edge)
         # fps 滤镜是等间隔输出，所以第 i 个候选的时间就是 i/rate。
         cands = [{"path": p, "t": i / rate, "index": i} for i, p in enumerate(cand_files)]
     elif src.is_dir():
-        cand_files = prepare_from_dir(src, tmp_dir, crop, center_x, long_edge)
+        cand_files = prepare_from_dir(src, tmp_dir, crop, center, long_edge)
         # 照片序列没有时间轴，用序号代替；min_interval 因此按「帧」而不是「秒」理解。
         cands = [{"path": p, "t": float(i), "index": i} for i, p in enumerate(cand_files)]
         meta["source_kind"] = "image_dir"
@@ -381,7 +387,7 @@ def main() -> int:
         "config": str(args.config.name),
         "params": {
             "target_frames": target, "long_edge": long_edge, "crop": crop,
-            "crop_center_x": center_x, "candidates_per_window": cpw,
+            "crop_center": center, "candidates_per_window": cpw,
             "blur_floor_factor": floor_factor, "min_interval_sec": min_interval,
         },
         "video": meta or None,
@@ -403,6 +409,9 @@ def main() -> int:
             for i, c in enumerate(picked)
         ],
     }
+    # 注意：这份 JSON 就放在帧目录里（数据自包含，整个目录拷走就行）。
+    # M2 的 pick_frames 是按 IMAGE_SUFFIXES 过滤后缀的，所以不会把它当成一帧读进去 ——
+    # 这是个隐式依赖，将来给 M2 加图片后缀时别把 .json 加进去。
     (out_dir / "_extract.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
