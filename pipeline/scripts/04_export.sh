@@ -9,7 +9,11 @@
 #   bash scripts/04_export.sh --scene riverview
 #   bash scripts/04_export.sh --scene riverview --min-opacity 0.1 --rotate -90,0,0
 #
+# 没在命令行给的选项，会去 config 的 export: 段找默认值（命令行优先）。
+#
 # 选项:
+#   --config <path>       preset，默认 config/recon-5090.yaml。M4 是纯 CPU，两台机器的
+#                         export 段内容相同，选哪个 preset 对结果没有影响。
 #   --scene <name>        场景名，默认从 --ply 的文件名推断
 #   --ply <path>          输入 PLY，默认 data/ply/<scene>.ply
 #   --out-dir <dir>       输出目录，默认 data/sog
@@ -32,6 +36,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."   # 切到 pipeline/，npx 要在这里才找得到本地 node_modules
 
+CONFIG="config/recon-5090.yaml"
 SCENE=""; PLY=""; OUT_DIR="data/sog"
 MIN_OPACITY=""; SH_BANDS=""; ROTATE=""; TRANSLATE=""; SCALE=""
 GPU=""; SH_ITER=""; KEEP_STATS=0; PUBLISH=0
@@ -40,6 +45,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --config)        CONFIG="$2"; shift 2 ;;
     --scene)         SCENE="$2"; shift 2 ;;
     --ply)           PLY="$2"; shift 2 ;;
     --out-dir)       OUT_DIR="$2"; shift 2 ;;
@@ -52,10 +58,34 @@ while [[ $# -gt 0 ]]; do
     --sh-iterations) SH_ITER="$2"; shift 2 ;;
     --keep-stats)    KEEP_STATS=1; shift ;;
     --publish)       PUBLISH=1; shift ;;
-    -h|--help)       sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)       awk 'NR>1 && /^#/ {print; next} NR>1 {exit}' "$0"; exit 0 ;;
     *)               die "未知参数 $1（-h 看用法）" ;;
   esac
 done
+
+# config 是我们自己维护的、结构固定的 YAML，所以这里用 awk 取标量就够了，
+# 不引入 YAML 解析依赖 —— M4 也可能在 Windows 的 git bash 里跑，那边没有 PyYAML。
+# 取不到、或值是 null / ~ 时一律返回空串，交给下面的「空则不加这个 action」逻辑。
+cfg_get() {
+  [[ -f "$CONFIG" ]] || return 0
+  awk -v sec="$1:" -v key="$2:" '
+    /^[^[:space:]#]/ { insec = ($1 == sec) }
+    insec && $1 == key {
+      line = $0
+      sub(/^[[:space:]]*[^:]*:[[:space:]]*/, "", line)
+      sub(/[[:space:]]*#.*$/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "null" || line == "~") line = ""
+      print line
+      exit
+    }
+  ' "$CONFIG"
+}
+
+# 命令行没给的，才去 config 拿
+[[ -z "$MIN_OPACITY" ]] && MIN_OPACITY="$(cfg_get export opacity_threshold)"
+[[ -z "$SH_BANDS"    ]] && SH_BANDS="$(cfg_get export sh_degree)"
+[[ -z "$ROTATE"      ]] && ROTATE="$(cfg_get export rotate)"
 
 [[ -z "$SCENE" && -n "$PLY" ]] && SCENE="$(basename "$PLY" .ply)"
 [[ -z "$SCENE" ]] && die "必须给 --scene 或 --ply"
@@ -95,6 +125,7 @@ GLOBAL=(--no-tty --memory -w)
 [[ -n "$GPU"     ]] && GLOBAL+=(-g "$GPU")
 [[ -n "$SH_ITER" ]] && GLOBAL+=(-i "$SH_ITER")
 
+echo "preset : $CONFIG"
 echo "输入   : $PLY ($(du -h "$PLY" | cut -f1))"
 echo "动作   : ${ACTIONS[*]}"
 echo "输出   : $SOG"
@@ -118,7 +149,7 @@ node scripts/04_summary.mjs "$STATS_TMP" "$META" \
   "machine=${SAWTOOTH_MACHINE:-$(hostname)}" \
   "timestamp=$(date +%Y-%m-%dT%H:%M:%S)" \
   "splat_transform=${ST_VER}" \
-  "actions=${ACTIONS[*]}" \
+  "actions=${ACTIONS[*]}"   "config=$(basename "$CONFIG")" \
   "sog_bytes=${SOG_BYTES}" \
   "sog_mb=$(awk -v s="$SOG_BYTES" 'BEGIN{printf "%.2f", s/1048576}')" \
   "export_seconds=${ELAPSED}" > /dev/null

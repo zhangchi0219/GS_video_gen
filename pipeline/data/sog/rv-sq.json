@@ -1,0 +1,36 @@
+{
+  "scene": "rv-sq",
+  "source_ply": "rv-sq.ply",
+  "machine": "Chi5090",
+  "timestamp": "2026-09-18T11:37:51",
+  "splat_transform": "splat-transform v3.4.2 (0cb47cd)",
+  "actions": "-N",
+  "sog_bytes": 17162825,
+  "sog_mb": 16.37,
+  "export_seconds": 3.35,
+  "gaussians": 1611678,
+  "sh_bands": 0,
+  "bbox_min": [
+    -4.7916,
+    -0.6335,
+    0.1799
+  ],
+  "bbox_max": [
+    3.088,
+    0.3757,
+    4.708
+  ],
+  "center": [
+    -0.8518,
+    -0.1289,
+    2.4439
+  ],
+  "radius": 4.5719,
+  "fill_ratio": 17.457,
+  "opacity_median": 0.2092,
+  "opacity_min": 0.000001,
+  "opacity_max": 0.996078,
+  "nan_count": 0,
+  "inf_count": 0,
+  "config": "recon-5090.yaml"
+}

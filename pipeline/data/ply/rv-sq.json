@@ -1,0 +1,60 @@
+{
+  "scene": "rv-sq",
+  "machine": "recon-5090",
+  "gpu": "NVIDIA GeForce RTX 5090 Laptop GPU",
+  "power_state": "交流电",
+  "frames_used": 12,
+  "frames_dir": "pipeline/data/frames/rv-sq",
+  "resolution": 448,
+  "dtype": "bf16",
+  "inference_seconds": 1.86,
+  "vram_peak_gb": 6.07,
+  "torch": "2.8.0+cu128",
+  "timestamp": "2026-09-18T11:37:22",
+  "gaussians": 1611678,
+  "sh_degree_model": 4,
+  "sh_coeffs_model": 25,
+  "sh_bands_saved": 1,
+  "sh_energy": {
+    "band0_rms": 1.34941,
+    "band1_rms": 0.04979,
+    "band2_rms": 0.01235,
+    "band3_rms": 0.00218,
+    "band4_rms": 0.00114,
+    "band0_energy_share": 0.995492,
+    "band1_energy_share": 0.004066,
+    "band2_energy_share": 0.000417,
+    "band3_energy_share": 1.8e-05,
+    "band4_energy_share": 6e-06,
+    "energy_identity_ok": true
+  },
+  "bbox_min": [
+    -4.7916,
+    -0.6335,
+    0.1799
+  ],
+  "bbox_max": [
+    3.088,
+    0.3757,
+    4.708
+  ],
+  "center": [
+    -0.8518,
+    -0.1289,
+    2.4439
+  ],
+  "opacity_mean_after_sigmoid": 0.3397,
+  "ply_bytes": 109594521,
+  "pred_extrinsic_shape": [
+    1,
+    12,
+    4,
+    4
+  ],
+  "pred_intrinsic_shape": [
+    1,
+    12,
+    3,
+    3
+  ]
+}

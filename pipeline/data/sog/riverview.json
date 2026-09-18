@@ -2,12 +2,12 @@
   "scene": "riverview",
   "source_ply": "riverview.ply",
   "machine": "Chi5090",
-  "timestamp": "2026-09-18T11:06:06",
+  "timestamp": "2026-09-18T11:24:49",
   "splat_transform": "splat-transform v3.4.2 (0cb47cd)",
   "actions": "-N",
   "sog_bytes": 16782448,
   "sog_mb": 16,
-  "export_seconds": 3.71,
+  "export_seconds": 3.74,
   "gaussians": 1559959,
   "sh_bands": 0,
   "bbox_min": [
@@ -31,5 +31,6 @@
   "opacity_min": 0.000001,
   "opacity_max": 0.996078,
   "nan_count": 0,
-  "inf_count": 0
+  "inf_count": 0,
+  "config": "recon-5090.yaml"
 }
