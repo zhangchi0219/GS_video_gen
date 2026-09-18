@@ -75,6 +75,10 @@ cfg_get() {
       sub(/^[[:space:]]*[^:]*:[[:space:]]*/, "", line)
       sub(/[[:space:]]*#.*$/, "", line)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      # YAML 里带引号的标量（比如 rotate: "180,0,0"）要把引号剥掉，
+      # 否则值里混着引号传下去，Number("\"180") 得到 NaN 而 NaN 是 falsy，
+      # 旋转会被静默跳过 —— 不报错，只是不生效。
+      gsub(/^["'"'"']|["'"'"']$/, "", line)
       if (line == "null" || line == "~") line = ""
       print line
       exit
@@ -149,7 +153,7 @@ node scripts/04_summary.mjs "$STATS_TMP" "$META" \
   "machine=${SAWTOOTH_MACHINE:-$(hostname)}" \
   "timestamp=$(date +%Y-%m-%dT%H:%M:%S)" \
   "splat_transform=${ST_VER}" \
-  "actions=${ACTIONS[*]}"   "config=$(basename "$CONFIG")" \
+  "actions=${ACTIONS[*]}"   "config=$(basename "$CONFIG")"   "merge_from=${PLY%.ply}.json"   "rotate_applied=${ROTATE}" \
   "sog_bytes=${SOG_BYTES}" \
   "sog_mb=$(awk -v s="$SOG_BYTES" 'BEGIN{printf "%.2f", s/1048576}')" \
   "export_seconds=${ELAPSED}" > /dev/null

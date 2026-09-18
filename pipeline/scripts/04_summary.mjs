@@ -5,7 +5,18 @@
 // stats.json 是对 **最终 .sog** 跑 `--stats json` 的结果（不是对源 PLY），
 // 所以这里的包围盒反映的是有损压缩之后的实际资产。
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+/** 绕 X→Y→Z 依次旋转（角度制），和 splat-transform 的 -r 同一套欧拉约定。
+ *  本项目实际只用到 180,0,0（把 CV 的 Y-down 世界转成 three 的 Y-up），
+ *  那种情况就是 (x,y,z) → (x,-y,-z)，任意角度的顺序问题没有实测验证过。 */
+function rotateVec([x, y, z], [rx, ry, rz]) {
+  const d = Math.PI / 180;
+  if (rx) { const c = Math.cos(rx * d), s = Math.sin(rx * d); [y, z] = [y * c - z * s, y * s + z * c]; }
+  if (ry) { const c = Math.cos(ry * d), s = Math.sin(ry * d); [x, z] = [x * c + z * s, -x * s + z * c]; }
+  if (rz) { const c = Math.cos(rz * d), s = Math.sin(rz * d); [x, y] = [x * c - y * s, x * s + y * c]; }
+  return [x, y, z].map((v) => Number(v.toFixed(5)));
+}
 
 const [statsPath, outPath, ...kvs] = process.argv.slice(2);
 if (!statsPath || !outPath) {
@@ -56,13 +67,40 @@ const out = {
   inf_count: lod0.data.infCount.reduce((a, b) => a + b, 0),
 };
 
+let mergeFrom = '';
+let rotate = '';
 for (const kv of kvs) {
   const i = kv.indexOf('=');
   if (i < 0) continue;
   const key = kv.slice(0, i);
   const raw = kv.slice(i + 1);
+  // 这两个是给本脚本用的指令，不写进输出
+  if (key === 'merge_from') { mergeFrom = raw; continue; }
+  if (key === 'rotate_applied') { rotate = raw; if (raw) out.rotate = raw; continue; }
   const num = Number(raw);
   out[key] = raw !== '' && !Number.isNaN(num) ? num : raw;
+}
+
+// 把 M2 写的相机位姿带过来：没有它，前端只能靠包围盒猜方向，而 splat 场景的朝向
+// 是重建出来的、任意的（实测连着两个场景默认视角都正对一堵墙，一片黑）。
+if (mergeFrom && existsSync(mergeFrom)) {
+  const m2 = JSON.parse(readFileSync(mergeFrom, 'utf8'));
+  const rot = rotate ? rotate.split(',').map(Number) : null;
+  if (Array.isArray(m2.cameras) && m2.cameras.length) {
+    out.cameras = rot
+      ? m2.cameras.map((c) => ({
+          pos: rotateVec(c.pos, rot),
+          fwd: rotateVec(c.fwd, rot),
+          up: rotateVec(c.up, rot),
+        }))
+      : m2.cameras;
+    // 相机必须和高斯一起转，否则 --rotate 之后初始机位就指到场景外面去了。
+    out.camera_convention = m2.camera_convention +
+      (rot ? `；已随 --rotate ${rotate} 一同旋转` : '');
+  }
+  for (const k of ['frames_used', 'scene_scale', 'dtype', 'inference_seconds']) {
+    if (m2[k] !== undefined) out[`m2_${k}`] = m2[k];
+  }
 }
 
 // 把描述性字段排到前面，数值结论排后面，方便人读 diff。

@@ -309,12 +309,44 @@ def main() -> int:
         "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         **stats,
     }
-    # 位姿也留一份：M4 生成前端相机初值时要用
+    # 位姿也留一份：M4 生成前端相机初值时要用。
+    #
+    # 这不是锦上添花 —— 没有它，前端只能靠包围盒猜一个方向，而 splat 场景的朝向是重建
+    # 出来的、完全任意的。实测连着三个场景（riverview、test）默认视角都正对着一堵墙，
+    # 一片黑。用「拍摄者真站过的位置」当初值，必然看得见东西。
+    #
+    # 约定 —— **这里有个坑，别照 docstring 写**：
+    # vggt/utils/pose_enc.py 的 docstring 说 extrinsic 是 world-to-camera，但 AnySplat
+    # 传给 decoder 之前已经转成了 **camera-to-world**。三处铁证：
+    #   decoder_splatting_cuda.py:66  test_w2c_i = extrinsics[i].inverse()   ← 取逆才是 w2c
+    #   cuda_splatting.py:88          view_matrix = extrinsics.inverse()
+    #   gaussian_adapter.py:72        c2w_rotations = extrinsics[..., :3, :3] ← 直接叫 c2w
+    # 按 docstring 的 w2c 公式算出来，相机会跑到包围盒外面、而且背对着场景看（实测过）。
+    #
+    # c2w 下（OpenCV 相机轴：x 右、y 下、z 前，矩阵的列就是各轴在世界中的方向）：
+    #   相机世界位置 = 平移列
+    #   前向（+Z）    = 第 3 列
+    #   上方向        = -第 2 列（OpenCV 的 y 朝下，取负才是「上」）
+    # 前端（three.js，y 朝上、看 -Z）拿 pos/fwd/up 走一次 lookAt 就行，不用自己推矩阵。
     try:
+        ext = pred_pose["extrinsic"][0].detach().float().cpu().numpy()
+        cams = []
+        for m in ext:
+            rot = m[:3, :3]
+            cams.append({
+                "pos": [round(float(v), 5) for v in m[:3, 3]],
+                "fwd": [round(float(v), 5) for v in rot[:, 2]],
+                "up": [round(float(v), 5) for v in -rot[:, 1]],
+            })
+        summary["cameras"] = cams
+        summary["camera_convention"] = (
+            "源自 camera-to-world / OpenCV(x右 y下 z前)；pos/fwd/up 已是世界坐标，"
+            "可直接喂给 three.js 的 lookAt"
+        )
         summary["pred_extrinsic_shape"] = list(pred_pose["extrinsic"].shape)
         summary["pred_intrinsic_shape"] = list(pred_pose["intrinsic"].shape)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log(f"警告：相机位姿没能导出（{type(exc).__name__}: {exc}），前端只能靠包围盒猜视角")
 
     sj = args.summary_json or args.out_ply.with_suffix(".json")
     sj.parent.mkdir(parents=True, exist_ok=True)

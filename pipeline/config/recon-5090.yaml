@@ -79,5 +79,8 @@ export:             # M4 = scripts/04_export.sh（纯 CPU，两台机器都能�
   # opacity_threshold 从 0.02 改成 null —— 实测 0.02 只省 8% 体积（16.00 → 14.71 MB），
   # 而它对画面的影响还没肉眼验证过。等渲染确认之后再定要不要开、开多大。
   opacity_threshold: null
-  # R8：坐标系旋转参数必须实测确定，AnySplat 的世界坐标系约定未经验证（issue #80）
-  rotate: null
+  # R8 已确定（2026-09-18）：AnySplat 的 extrinsic 是 world-to-camera / OpenCV 约定
+  # （x 右、y 下、z 前），实测 45 个相机的 up 向量全都是 (0,-1,0) —— 世界坐标系的 Y 朝下，
+  # 而 three.js 的 Y 朝上，所以整个场景在浏览器里是倒的。绕 X 轴转 180° 正好把它扶正
+  # （(x,y,z) → (x,-y,-z)）。这个结论是从相机位姿数据读出来的，不是靠肉眼试出来的。
+  rotate: "180,0,0"

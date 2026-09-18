@@ -30,13 +30,19 @@ import { SparkControls, SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 type Builtin = { key: string; file: string; meta?: string; note: string };
 
 const BUILTINS: Builtin[] = [
-  { key: 'riverview.sog', file: 'riverview.sog', meta: 'riverview.json', note: '自产 PLY · 本地导出' },
+  { key: 'test.sog', file: 'test.sog', meta: 'test.json', note: '自采视频 · 45 帧' },
+  { key: 'riverview.sog', file: 'riverview.sog', meta: 'riverview.json', note: '官方帧 · 本地重建' },
   { key: 'butterfly.sog', file: 'butterfly.sog', note: '官方数据 · 本地导出' },
   { key: 'butterfly.spz', file: 'butterfly.spz', note: '官方数据 · 官方格式' },
 ];
 
+/** M2 预测出的一个训练相机，已由 04 转成世界坐标并随 --rotate 一起旋转过。 */
+type CamPose = { pos: [number, number, number]; fwd: [number, number, number]; up: [number, number, number] };
+
 /** 04_export.sh 写出的元数据；缺失时降级用 mesh 自报的包围盒。 */
 type SceneMeta = {
+  cameras?: CamPose[];
+  rotate?: string;
   scene?: string;
   gaussians?: number;
   sog_mb?: number;
@@ -296,24 +302,63 @@ export function SplatViewer() {
     [sourceKey, recents],
   );
 
-  /** 按当前的取景参数摆相机，并把 OrbitControls 的活动范围限制在附近（§5）。 */
+  /** 取一个训练相机当机位。它是拍摄者真站过的位置，必然看得见东西。 */
+  const trainingPose = useCallback((cams: CamPose[], idx: number): { pose: Pose; target: THREE.Vector3 } => {
+    const mesh = meshRef.current;
+    const c = cams[Math.min(cams.length - 1, Math.max(0, idx))];
+    const pos = new THREE.Vector3(...c.pos);
+    const fwd = new THREE.Vector3(...c.fwd);
+    const up = new THREE.Vector3(...c.up);
+    // 元数据是资产自身坐标系里的；翻转开关一勾，相机也得跟着走。
+    if (mesh) {
+      mesh.updateMatrixWorld(true);
+      pos.applyMatrix4(mesh.matrixWorld);
+      fwd.transformDirection(mesh.matrixWorld);
+      up.transformDirection(mesh.matrixWorld);
+    }
+    const { center, radius } = frameRef.current;
+    // OrbitControls 会强制相机看向 target，所以 target 必须落在这条视线上，
+    // 否则刚摆好的朝向下一帧就被拧走了。
+    const dist = Math.max(radius * 0.5, pos.distanceTo(center) * 0.6);
+    const target = pos.clone().addScaledVector(fwd, dist);
+    const m = new THREE.Matrix4().lookAt(pos, target, up);
+    return { pose: { pos, quat: new THREE.Quaternion().setFromRotationMatrix(m) }, target };
+  }, []);
+
+  /** 按当前的取景参数摆相机，并把 OrbitControls 的活动范围限制在附近（§5）。
+   *
+   * 优先站到**中间那个训练相机**的位置上（CLAUDE.md M5：相机初始位姿读 M4 的 JSON）。
+   * 靠包围盒猜方向连着坑过两个场景：splat 的朝向是重建出来的、完全任意的，
+   * riverview 和 test 的默认视角都正对着一堵墙，一片漆黑。 */
   const applyFraming = useCallback(() => {
     const core = coreRef.current;
     if (!core) return;
     const { center, radius } = frameRef.current;
-    const p = presetPose(center, radius, FOV, DEFAULT_VIEW);
-    core.camera.position.copy(p.pos);
-    core.camera.quaternion.copy(p.quat);
+    const cams = metaRef.current?.cameras;
+
+    let pose: Pose;
+    let target: THREE.Vector3;
+    if (cams?.length) {
+      const r = trainingPose(cams, Math.floor(cams.length / 2));
+      pose = r.pose;
+      target = r.target;
+    } else {
+      pose = presetPose(center, radius, FOV, DEFAULT_VIEW);
+      target = center.clone();
+    }
+
+    core.camera.position.copy(pose.pos);
+    core.camera.quaternion.copy(pose.quat);
     core.camera.near = Math.max(radius * 0.005, 1e-4);
     core.camera.far = radius * 200;
     core.camera.updateProjectionMatrix();
-    core.orbit.target.copy(center);
-    core.orbit.minDistance = radius * 0.05;
+    core.orbit.target.copy(target);
+    core.orbit.minDistance = radius * 0.02;
     core.orbit.maxDistance = radius * 8;
     core.orbit.update();
     // 飞行速度要跟着场景尺度走，否则大场景里挪不动、小场景里一按就飞出去。
     core.spark.fpsMovement.moveSpeed = radius * 0.6;
-  }, []);
+  }, [trainingPose]);
 
   /** 从 mesh + 元数据算出世界空间的 center / radius。
    *  元数据优先（CLAUDE.md M5：相机初始位姿读 M4 的 JSON），没有才退回 mesh 自报的包围盒。 */
@@ -751,6 +796,19 @@ export function SplatViewer() {
           </div>
 
           <div className="row">
+            {info?.meta?.cameras?.length ? (
+              <button
+                className="btn"
+                disabled={status !== 'ready'}
+                title="回到中间那个拍摄机位"
+                onClick={() => {
+                  const cams = metaRef.current?.cameras;
+                  if (cams?.length) flyTo(trainingPose(cams, Math.floor(cams.length / 2)).pose);
+                }}
+              >
+                拍摄点
+              </button>
+            ) : null}
             {PRESETS.map((p) => (
               <button
                 key={p.kind}
@@ -859,7 +917,17 @@ export function SplatViewer() {
             <>
               <Row k="高斯数" v={info.gaussians.toLocaleString('en-US')} />
               <Row k="加载耗时" v={`${fmt(info.seconds)} s`} />
-              <Row k="取景依据" v={meta?.center && meta.radius ? '元数据 JSON' : 'mesh 包围盒'} />
+              <Row
+                k="取景依据"
+                v={
+                  meta?.cameras?.length
+                    ? `训练相机 ${Math.floor(meta.cameras.length / 2) + 1}/${meta.cameras.length}`
+                    : meta?.center && meta.radius
+                      ? '元数据包围盒'
+                      : 'mesh 包围盒'
+                }
+              />
+              {meta?.rotate && <Row k="坐标系修正" v={`--rotate ${meta.rotate}`} />}
               <Row k="包围盒 min" v={fmtVec(info.box.min)} />
               <Row k="包围盒 max" v={fmtVec(info.box.max)} />
               {meta && (

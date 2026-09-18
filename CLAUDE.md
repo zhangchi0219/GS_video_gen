@@ -331,6 +331,27 @@ sawtooth-splat/
   「UI 状态切换正确、资产加载正确、数值对账正确」这一层。
 - 顺带修了个真 bug：`addKey` 在 tween 途中会记下半路上的位置，现在先让 tween 落位再记。
 
+**坑 14：AnySplat 的 extrinsic 是 camera-to-world，而它依赖的 VGGT docstring 写的是 world-to-camera**
+- 症状：按 docstring 的 w2c 公式（位置 = -Rᵀt、前向 = R 第 3 行）算出来的相机，
+  有一部分落在场景包围盒**外面**，而且**背对着场景**看 —— 前端拿它当初始机位，一片黑。
+- 原因：`vggt/utils/pose_enc.py` 的 docstring 确实写着「representing camera from world
+  transformation」，但 AnySplat 在交给 decoder 之前已经转成了 c2w。三处铁证：
+  `decoder_splatting_cuda.py:66` 写 `test_w2c_i = extrinsics[i].inverse()`（取逆才是 w2c）、
+  `cuda_splatting.py:88` 同样 `extrinsics.inverse()`、`gaussian_adapter.py:72` 的变量
+  直接叫 `c2w_rotations`。**以调用方的代码为准，别信上游库的 docstring。**
+- 修复（c2w 下，矩阵的列就是相机各轴在世界中的方向）：
+  位置 = 平移列；前向 = 第 3 列；上方向 = **负的**第 2 列（OpenCV 的 y 朝下）。
+- 自检：改完之后 45 个相机**全部**落进场景包围盒内（改之前有跑到外面的），
+  相邻相机位移中位数 0.049、连续无跳变。这个「相机该在场景里」的检查很便宜，值得每次都做。
+
+**坑 15：config 里带引号的 YAML 标量会把引号一起传下去，而且不报错**
+- 症状：`rotate: "180,0,0"` 经 `04_export.sh` 的 awk 取出来仍带引号，传给 splat-transform
+  变成 `-r "180,0,0"`；下游 `Number('"180')` 得到 NaN，而 **NaN 是 falsy**，
+  旋转分支被静默跳过 —— 不报错、不告警，只是不生效。
+- 修复：`cfg_get` 里 `gsub(/^["']|["']$/, "", line)` 把引号剥掉。
+- 自检：导出后对比 PLY 与 SOG 的包围盒 —— 绕 X 转 180° 后 y/z 应当取反并互换 min/max，
+  相机 up 应当从 (0,-1,0) 变成 (0,1,0)。对不上就是没生效。
+
 ## 9. 明确不做的事
 
 - 不做 4D / 动态场景（MoVieS、MoSca 属于 Step 2/3，另立文件）。

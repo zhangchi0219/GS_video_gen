@@ -11,6 +11,9 @@ pipeline/data/**
 !pipeline/data/ply/*.json
 !pipeline/data/sog/*.json
 
+# 原始素材：视频动辄几十上百 MB，和 data/ 一样不进 git（§4）
+media/
+
 # Python
 __pycache__/
 *.pyc
