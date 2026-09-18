@@ -1,0 +1,261 @@
+/* ============================================================
+   SplatViewer 的样式层。
+   加载顺序：tokens.css → base.css → 本文件。
+   tokens.css / base.css 属于设计系统，只消费不修改（CLAUDE.md §5）。
+   ============================================================ */
+
+/* — 自托管字体 ————————————————————————————————————
+   §5 硬约束：不用 Google Fonts（国内不可达）。三个 Latin 面从各自的官方
+   GitHub 仓库下载后放在 src/fonts/，中文走系统栈（PingFang SC /
+   Microsoft YaHei），零下载 —— 完整的中文 webfont 有好几 MB，不值得。
+   字体放 src/ 而不是 public/：Vite 只重写它自己解析的相对路径，public/ 要写成
+   绝对的 /fonts/…，而 base 是 './'（子目录部署），绝对路径到了子目录就 404。
+   unicode-range 限定到 Latin：页面里没有 Latin 字形时浏览器根本不会下载它。 */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("./fonts/bricolage-grotesque-800.woff2") format("woff2");
+  font-weight: 700 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2074,
+                 U+20AC, U+2122, U+2212;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/jetbrains-mono-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2074,
+                 U+20AC, U+2122, U+2212;
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("./fonts/plus-jakarta-sans-400.woff2") format("woff2");
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2074,
+                 U+20AC, U+2122, U+2212;
+}
+
+/* — 本组件自己的几个值 —————————————————————————————— */
+:root {
+  --stage: #121110;        /* 3D 画布的底色：带一点暖的黑，和暖沙色的侧栏同一家族 */
+  --stage-ink: #E7E2D4;    /* 画布上的文字 */
+  --hairline: #D6D0BE;     /* 侧栏里的分隔线 */
+  --sidebar-w: clamp(340px, 37vw, 560px);   /* 签名的 3/7 分栏，但给查看器留够画面 */
+}
+
+html, body, #root { height: 100%; }
+body { overflow: hidden; }
+
+/* — 外壳：3/7 分栏 ————————————————————————————————— */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  height: 100%;
+}
+.shell[data-collapsed="true"] { grid-template-columns: 0 1fr; }
+
+/* — 侧栏 —————————————————————————————————————————— */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s5) var(--s4);
+  overflow-y: auto;
+  background: var(--canvas);
+  border-right: 1px solid var(--hairline);
+}
+.shell[data-collapsed="true"] .sidebar { display: none; }
+
+.identity {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+/* hero 标题刻意用英文：Bricolage 是 Latin-only，中文标题会落到系统黑体、
+   撑不起这个字重。中文放在下面那行小字里。 */
+.hero {
+  margin: 0;
+  font: 800 clamp(2.2rem, 4.6vw, 3.4rem)/var(--leading-tight) var(--font-display);
+  letter-spacing: -0.02em;
+}
+.hero-sub {
+  margin: var(--s2) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+.section { display: flex; flex-direction: column; gap: var(--s3); }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* — 资产卡片 —————————————————————————————————————— */
+.cards { display: flex; flex-direction: column; gap: var(--s2); }
+.card {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: var(--s3) var(--s4) var(--s3) var(--s3);
+  border: none;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.card:hover { transform: translateX(2px); }
+.card[data-active="true"] { background: var(--m-sage); }
+.card-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-bottom: var(--s1);
+}
+.card-title {
+  font: 700 1.0625rem/1.2 var(--font-display);
+  word-break: break-all;
+}
+/* 签名的对角箭头：唯一的「点这里会跳转/切换」提示 */
+.card-go {
+  position: absolute;
+  right: var(--s3);
+  bottom: var(--s3);
+  font: 500 var(--fs-label)/1 var(--font-mono);
+  color: var(--ink-muted);
+}
+
+/* — 控件 —————————————————————————————————————————— */
+.row { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.btn {
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  font: 500 var(--fs-label)/1 var(--font-mono);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.btn:hover:not(:disabled) { background: var(--ink); color: var(--canvas); }
+.btn[data-on="true"] { background: var(--ink); color: var(--canvas); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 整屏只有这一个 hot 块 */
+.btn-hot {
+  border-color: var(--hot);
+  background: var(--hot);
+  color: var(--on-hot);
+}
+.btn-hot:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+
+.field { display: flex; align-items: center; gap: var(--s2); }
+.field input[type="range"] { flex: 1; accent-color: var(--hot); }
+.check { display: flex; align-items: center; gap: var(--s2); cursor: pointer; }
+.check input { accent-color: var(--hot); }
+
+/* — 关键帧列表 ————————————————————————————————————— */
+.keys { display: flex; flex-direction: column; gap: var(--s1); }
+.key {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+.key[data-current="true"] { background: var(--m-slate); }
+.key-i { min-width: 2.2em; }
+.key-pos { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-x {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 500 var(--fs-label)/1 var(--font-mono);
+  cursor: pointer;
+}
+.key-x:hover { color: var(--hot); }
+
+/* — 底部 meta —————————————————————————————————————— */
+.meta { margin-top: auto; padding-top: var(--s4); border-top: 1px solid var(--hairline); }
+.meta-row { display: flex; justify-content: space-between; gap: var(--s3); padding: 2px 0; }
+.meta-row > span:last-child { font-family: var(--font-mono); font-size: var(--fs-label); text-align: right; word-break: break-all; }
+
+/* — 画布区 ————————————————————————————————————————— */
+.stage { position: relative; background: var(--stage); overflow: hidden; }
+.stage canvas { display: block; }
+
+.stage-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--s6);
+  text-align: center;
+  color: var(--stage-ink);
+  pointer-events: none;
+}
+.stage-overlay[data-drop="true"] {
+  background: rgba(230, 62, 39, 0.16);
+  outline: 2px dashed var(--hot);
+  outline-offset: calc(-1 * var(--s4));
+}
+
+.stage-toggle {
+  position: absolute;
+  top: var(--s3);
+  left: var(--s3);
+  z-index: 2;
+  padding: var(--s2) var(--s3);
+  border: 1px solid rgba(231, 226, 212, 0.35);
+  border-radius: var(--radius-pill);
+  background: rgba(18, 17, 16, 0.7);
+  color: var(--stage-ink);
+  font: 500 var(--fs-label)/1 var(--font-mono);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.stage-toggle:hover { background: var(--stage-ink); color: var(--stage); }
+
+/* 飞行模式的按键提示，压在画面右下角 */
+.stage-hint {
+  position: absolute;
+  right: var(--s3);
+  bottom: var(--s3);
+  z-index: 2;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius);
+  background: rgba(18, 17, 16, 0.7);
+  color: var(--stage-ink);
+  font: 500 var(--fs-label)/1.6 var(--font-mono);
+  letter-spacing: var(--tracking-label);
+  backdrop-filter: blur(6px);
+}
+
+.bar { height: 3px; border-radius: 2px; background: rgba(231, 226, 212, 0.2); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--hot); transition: width 0.15s ease; }
+
+.err { color: var(--hot); }
+.ok { color: #2F7D4F; }
+
+/* — 窄屏：分栏叠成上下 ——————————————————————————————— */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; }
+  .shell[data-collapsed="true"] { grid-template-rows: 0 1fr; }
+  .sidebar { border-right: none; border-bottom: 1px solid var(--hairline); }
+}

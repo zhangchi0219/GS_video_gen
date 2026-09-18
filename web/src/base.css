@@ -1,0 +1,30 @@
+/* ============================================================
+   Studio Web UI — Base layer
+   Element defaults + shared utilities.
+   Load AFTER tokens.css — this file consumes the variables
+   defined there (var(--canvas), var(--font-body), etc.).
+   ============================================================ */
+
+/* — Base: apply the canvas + type to bare HTML —————————— */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 400 var(--fs-body)/1.5 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* — Utilities ——————————————————————————————————————— */
+
+/* the mono metadata label — the signature element */
+.label {
+  font: 500 var(--fs-label)/1 var(--font-mono);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* flip text to light when a block carries the hot fill */
+.on-hot { color: var(--on-hot); }

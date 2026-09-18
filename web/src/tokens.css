@@ -1,0 +1,62 @@
+/* ============================================================
+   Studio Web UI — Design Tokens (pure)
+   The single source of truth for values. Nothing here styles
+   an element — these are only named decisions. Element wiring
+   and utilities live in base.css.
+   Copy this file in, then base.css, then reference the variables
+   everywhere. Never hardcode a value that has a token.
+   ============================================================ */
+
+:root {
+  /* — Canvas & ink —————————————————————————————— */
+  --canvas:     #E7E2D4;   /* warm sand (default). Alt cream: #F3F0E9 */
+  --surface:    #EFEBDF;   /* slightly lighter, for raised panels */
+  --ink:        #0A0A0A;   /* near-black text */
+  --ink-muted:  #6B6862;   /* warm gray, for secondary text + labels */
+
+  /* — One hot accent. Use it ONCE per screen (a CTA, or one block). — */
+  --hot:        #E63E27;   /* orange-red */
+  --on-hot:     #F3F0E9;   /* light text that sits on the hot fill */
+
+  /* — Module accent palette: color-code each course module / card. —
+     Text on the muted blocks (sage/clay/salmon/slate) = var(--ink).
+     Text on the hot block = var(--on-hot). */
+  --m-sage:     #A6B3A0;
+  --m-clay:     #BBA98A;
+  --m-salmon:   #EFD3C8;
+  --m-slate:    #A0A6EC;
+  --m-hot:      #E63E27;
+
+  /* — Type families ————————————————————————————————
+     Latin display/mono fonts do NOT cover Chinese glyphs, so every
+     chain ends in a CJK fallback (PingFang SC on Apple, Microsoft
+     YaHei on Windows, Noto Sans SC self-hosted). For self-hosting the
+     Latin faces reliably in mainland China, see references/fonts-china.md */
+  --font-display: "Bricolage Grotesque", "Archivo", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", "Space Mono", ui-monospace, "PingFang SC", monospace;
+  --font-body:    "Plus Jakarta Sans", "Work Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-serif:   "Fraunces", "Newsreader", "Songti SC", "Source Han Serif SC", Georgia, serif; /* optional editorial register */
+
+  /* — Type scale. Display is deliberately oversized. — */
+  --fs-display:     clamp(3rem, 9vw, 7rem);     /* hero / sidebar heading */
+  --fs-card-title:  clamp(1.6rem, 3.2vw, 2.4rem);
+  --fs-body:        1.0625rem;                  /* 17px */
+  --fs-label:       0.75rem;                    /* 12px mono labels */
+  --tracking-label: 0.08em;                     /* letter-spacing for labels */
+  --leading-tight:  0.95;                       /* display line-height */
+
+  /* — Spacing, 8px base ——————————————————————————— */
+  --s1: 4px;  --s2: 8px;  --s3: 16px; --s4: 24px;
+  --s5: 32px; --s6: 48px; --s7: 64px; --s8: 96px;
+
+  /* — Radius. DEFAULT is soft/rounded. ————————————————
+     For the hard brutalist skin, set --radius: 0 (everything
+     else stays identical). Don't mix hard and soft on one page. */
+  --radius:      24px;
+  --radius-pill: 999px;
+
+  /* — Grid ————————————————————————————————————————— */
+  --split-sidebar: 37fr;   /* the signature 3/7 split */
+  --split-content: 63fr;
+  --maxw: 1600px;
+}
