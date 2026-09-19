@@ -120,7 +120,8 @@ bash pipeline/scripts/04_export.sh --scene mydesk --publish
 ```
 
 PLY → 单文件 `.sog`（约小一个数量级），`--publish` 直接送到 `web/public/splats/`。
-坐标系修正、球谐降阶、低不透明度过滤都在这一步做完。
+默认只做坐标系修正（config 里的 `export.rotate`）；球谐降阶和低不透明度过滤在 config 里默认关闭，
+需要时加 `--sh-bands <n>` / `--min-opacity <0-1>`。
 
 ### 5. 网页
 
