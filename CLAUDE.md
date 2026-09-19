@@ -213,7 +213,14 @@ sawtooth-splat/
    **要拍有纹理的实物**（书架、桌面杂物、植物），画幅 1:1 或 4:3，慢一点匀速转。
 5. **双机一致性检查**：同一份帧序列在两台上各跑一次 M2（台式用 64 帧 preset），
    比对高斯数量与 PSNR，差异过大说明环境不一致，回到 R11。
-6. **单文件 demo 打磨**：相机限制、加载进度、错误提示。
+6. **单文件 demo 打磨** —— **2026-09-19 完成（笔记本）**。相机范围、加载进度、测量功能此前已做；
+   这次补的是出错路径：错误分五类（缺失 / 下载 / 解析 / 无 WebGL2 / 上下文丢失），各给各的建议；
+   加载前先发 HEAD 预检；没有 WebGL2 不再白屏；上下文丢失给说明卡 + 重载按钮；
+   页面隐藏或画布滚出视口就暂停渲染，恢复时把路径播放 / 过渡 / FPS / 飞行惯性的时钟接上。
+   浏览器里实测过：无 WebGL2 卡片、上下文丢失卡片 + 重载、vite dev 的 HTML 兜底、
+   404（用 `python -m http.server -d dist` 模拟 nginx，它同样没有兜底）、隐藏 / 视口外暂停与恢复。
+   **还没实测的**：暂停后恢复时路径播放不跳帧、飞行模式不冲出去 —— 要在前台窗口里人工看（坑 13）。
+   注意：后台标签页里 IntersectionObserver 连初始回调都不来，视口暂停只能在前台验证。
 7. **部署** —— **2026-09-18 本地验证完成，尚未上线**。配置与脚本三件套在
    `web/`：`nginx-sawtooth.conf`（站点配置）、`deploy.sh`（构建+rsync，默认 dry-run）、
    `verify-deploy.sh`（自检，本地和生产跑同一份）。本地 nginx 1.24 上自检 10 项全过，
@@ -397,6 +404,22 @@ sawtooth-splat/
 - 另一面：test.sog 这类雾蒙蒙的场景，阈值调低命中率上去了，但点会落在表面前面的雾上 ——
   同一像素 0.05 和 0.2 两次拾取实测相差 0.34 u（场景约 1.2×1.9×2.2 u）。
 - 对策：miss 提示里写明三种可能，不只叫人调阈值。**调阈值没反应，就说明不是不透明度的问题。**
+
+**坑 21：资产缺失时 vite dev 和 nginx 的表现不一样（2026-09-19）**
+- 症状：vite dev 里请求一个不存在的 `.sog`，拿到的是 **200 + `text/html`**（SPA 兜底返回 index.html），
+  Spark 拿网页字节去解析，报一个和「文件不存在」毫不相干的错误。
+  生产 nginx 的 `location /splats/` 没有 `try_files`，缺文件就是干脆的 404。
+- 修复：加载前先 `HEAD` 预检，404 和 `Content-Type: text/html` 都归到「找不到资产」。
+  BT Panel 的「伪静态」规则如果把所有路径兜底到 index.html，线上也会变成前一种情况 —— 预检照样能抓到。
+
+**坑 22：WebGL 上下文丢失后，Chrome 把画布画成一整块白色（2026-09-19）**
+- 症状：用 `WEBGL_lose_context` 触发丢失后，深色舞台变成白底，上面浅色的说明文字几乎看不见。
+- 修复：上下文丢失时把 canvas 设成 `visibility: hidden`，露出下面的深色舞台背景。
+- 顺带：`webglcontextlost` 里必须 `preventDefault()`，否则 `restored` 永远不会来；
+  不做原地恢复（验证不了 Spark 内部的纹理能不能重建），只给重载按钮。
+- 测法：控制台执行
+  `document.querySelector('canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()`。
+  「没有 WebGL2」用 dev 专用的 `?simulate=no-webgl2` 模拟（Chrome 已经没有单独关 WebGL2 的开关了）。
 
 ## 9. 明确不做的事
 

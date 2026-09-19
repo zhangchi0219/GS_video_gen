@@ -208,6 +208,10 @@ body { overflow: hidden; }
   color: var(--stage-ink);
   pointer-events: none;
 }
+/* 覆盖层整体不吃指针（别挡住画布拖动），只有里面的按钮要能点；
+   深色舞台上按钮改用舞台前景色，不然 ink 描边看不见 */
+.stage-overlay .btn { pointer-events: auto; border-color: var(--stage-ink); color: var(--stage-ink); }
+.stage-overlay .btn:hover { background: var(--stage-ink); color: var(--stage); }
 .stage-overlay[data-drop="true"] {
   background: rgba(230, 62, 39, 0.16);
   outline: 2px dashed var(--hot);

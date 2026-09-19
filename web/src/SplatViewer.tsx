@@ -307,6 +307,69 @@ function buildMeasureOverlay(group: THREE.Group, dot: THREE.Texture, measures: M
 type Status = 'loading' | 'ready' | 'error';
 type CameraMode = 'orbit' | 'fly';
 
+/**
+ * 出错要分类：不同的原因给的建议完全不同。「资产不进 git，先跑 04_export」
+ * 这条只对文件缺失成立，拿去回答「浏览器没有 WebGL2」就是误导。
+ *   missing       文件不在（404，或被 SPA 兜底换成了 index.html）
+ *   fetch         网络 / 权限 / 服务器错误
+ *   parse         拿到了字节但解析不了（损坏、截断、格式不对）
+ *   webgl2        建不出 WebGL2 上下文 —— 整个查看器都用不了
+ *   context-lost  跑着跑着 GPU 把上下文收回了 —— 同上，只能重载
+ */
+type FailKind = 'missing' | 'fetch' | 'parse' | 'webgl2' | 'context-lost';
+type Failure = { kind: FailKind; msg: string; raw?: string };
+
+/**
+ * 下载十几 MB 之前先问一句：文件在不在、是不是资产。
+ * 文件缺失在两种部署下表现不一样：nginx 的 /splats/ 没有兜底，缺了就是干脆的 404；
+ * 而 vite dev（以及任何配了 SPA 兜底的站点）会回 200 + index.html，Spark 拿着网页字节
+ * 去解析，只会报一个和「文件不存在」毫不相干的错误。后一种才是这次预检真正要抓的。
+ */
+async function preflight(url: string): Promise<Failure | null> {
+  let r: Response;
+  try {
+    r = await fetch(url, { method: 'HEAD' });
+  } catch (e) {
+    return { kind: 'fetch', msg: '连不上服务器：网络断了，或者请求被浏览器拦下了', raw: String(e) };
+  }
+  // 有的服务器 / CDN 不接 HEAD。不算错，交给真正的下载去报。
+  if (r.status === 405 || r.status === 501) return null;
+  if (r.status === 404) return { kind: 'missing', msg: `服务器上没有这个文件：${url}` };
+  if (r.status === 403) {
+    return {
+      kind: 'fetch',
+      msg: '服务器拒绝读取（403）。多半是站点目录权限不对 —— nginx 的 worker 进不去（CLAUDE.md 坑 18）',
+    };
+  }
+  if (!r.ok) return { kind: 'fetch', msg: `服务器出错：HTTP ${r.status} ${r.statusText}` };
+  const ct = r.headers.get('content-type') ?? '';
+  if (ct.startsWith('text/html')) {
+    return {
+      kind: 'missing',
+      msg: '服务器回的是一个网页，不是 splat 资产。文件多半不存在，请求被 SPA 兜底规则转给了 index.html',
+      raw: `${url} → Content-Type: ${ct}`,
+    };
+  }
+  return null;
+}
+
+/** 预检之后仍然可能失败（下载中断、文件损坏），把 Spark 抛的原始异常翻成人话。 */
+function explainLoadError(e: unknown): Failure {
+  const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  // Spark 2.2 的下载错误格式：Failed to fetch "<url>": <status> <statusText>
+  const m = /Failed to fetch ".*?": (\d+)/.exec(raw);
+  if (m) {
+    return m[1] === '404'
+      ? { kind: 'missing', msg: '服务器上没有这个文件（404）', raw }
+      : { kind: 'fetch', msg: `下载失败：HTTP ${m[1]}`, raw };
+  }
+  // 浏览器自己的网络错误（断网、下载到一半连接被掐）是 TypeError
+  if (e instanceof TypeError && /fetch|network/i.test(e.message)) {
+    return { kind: 'fetch', msg: '下载中途断了。网络不稳时大文件容易这样，重试一次', raw };
+  }
+  return { kind: 'parse', msg: '文件读到了，但解析不了：可能损坏、没传完，或者不是它后缀声称的格式', raw };
+}
+
 type LoadInfo = {
   gaussians: number;
   seconds: number;
@@ -345,9 +408,13 @@ export function SplatViewer() {
 
   const [status, setStatus] = useState<Status>('loading');
   const [progress, setProgress] = useState(0);
-  const [error, setError] = useState('');
+  const [failure, setFailure] = useState<Failure | null>(null);
+  /** 渲染器已经不能用了（没有 WebGL2 / 上下文丢失）。load effect 要读，所以放 ref。 */
+  const fatalRef = useRef(false);
   const [info, setInfo] = useState<LoadInfo | null>(null);
   const [fps, setFps] = useState(0);
+  /** 渲染循环停着（页面隐藏 / 画布不在视口）。这时 FPS 读数没有意义，别显示成红色的 0。 */
+  const [paused, setPaused] = useState(false);
 
   const [mode, setMode] = useState<CameraMode>('orbit');
   const [flipX, setFlipX] = useState(false);
@@ -518,7 +585,29 @@ export function SplatViewer() {
     const host = hostRef.current;
     if (!host) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    // three r163 起只支持 WebGL2，建不出上下文就在构造函数里直接抛。不接住的话，
+    // 异常会从 effect 里冒出去，React 把整棵树卸掉 —— 用户看到的是一张白纸。
+    let renderer: THREE.WebGLRenderer;
+    try {
+      // 开发时用 ?simulate=no-webgl2 走这条分支；Chrome 已经没有单独关 WebGL2 的开关了。
+      if (import.meta.env.DEV && new URLSearchParams(location.search).get('simulate') === 'no-webgl2') {
+        throw new Error('（模拟）Error creating WebGL context.');
+      }
+      renderer = new THREE.WebGLRenderer({ antialias: false });
+    } catch (e) {
+      fatalRef.current = true;
+      const noApi = typeof WebGL2RenderingContext === 'undefined';
+      setFailure({
+        kind: 'webgl2',
+        msg: noApi
+          ? '这个浏览器不支持 WebGL2。换一个新版的 Chrome / Edge / Firefox / Safari（2021 年以后的版本都行）'
+          : '浏览器支持 WebGL2，但建不出上下文：多半是硬件加速被关了，或者显卡驱动被浏览器列入了黑名单',
+        raw: e instanceof Error ? e.message : String(e),
+      });
+      setStatus('error');
+      return;
+    }
+    fatalRef.current = false;
     // splat 渲染卡在填充率上，DPR 拉满等于白算一倍像素（R9）。
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(host.clientWidth, host.clientHeight);
@@ -630,9 +719,7 @@ export function SplatViewer() {
 
     let frames = 0;
     let lastFpsAt = performance.now();
-    // 用 setAnimationLoop 而不是裸 rAF：它是 three 的官方入口（WebXR 下也走同一条路），
-    // 传 null 等价于 cancelAnimationFrame，清理照样是配对的。
-    renderer.setAnimationLoop(() => {
+    const frame = () => {
       const now = performance.now();
       const play = playRef.current;
       const tween = tweenRef.current;
@@ -704,10 +791,79 @@ export function SplatViewer() {
         frames = 0;
         lastFpsAt = now;
       }
+    };
+
+    // ---- 看不见就不画 ----
+    // 后台标签页浏览器本来就会停掉 rAF（坑 13），这里多管的是两件事：
+    //   1. 页面可见、但画布被滚出视口 —— 以后嵌进作品站当岛屿组件 / iframe 时（M6）
+    //      就是这种情况，浏览器不会替我们停，几百万高斯照画不误。
+    //   2. 恢复时把时钟接上。路径播放、机位过渡、FPS 统计、Spark 的飞行惯性都拿
+    //      performance.now() 算经过的时间；停了半分钟回来，路径会直接跳到终点，
+    //      FPS 头一个读数接近 0，飞行模式按一次键会冲出去半个场景。
+    let running = false;
+    let pausedAt = 0;
+    let onScreen = true;
+    let lost = false;
+    const syncRunning = () => {
+      const want = !document.hidden && onScreen && !lost;
+      // 放在相等判断之前：页面一打开就在后台时 running 和 want 都是 false，照样要标成已暂停
+      setPaused(!want);
+      if (want === running) return;
+      running = want;
+      if (!want) {
+        pausedAt = performance.now();
+        // 用 setAnimationLoop 而不是裸 rAF：它是 three 的官方入口（WebXR 下也走同一条路），
+        // 传 null 等价于 cancelAnimationFrame，清理照样是配对的。
+        renderer.setAnimationLoop(null);
+        return;
+      }
+      if (pausedAt) {
+        // 只挪暂停之前就在跑的动画；暂停期间才开始的（t0 晚于 pausedAt）本来就没少走时间
+        const gap = performance.now() - pausedAt;
+        const play = playRef.current;
+        const tween = tweenRef.current;
+        if (play && play.t0 < pausedAt) play.t0 += gap;
+        if (tween && tween.t0 < pausedAt) tween.t0 += gap;
+      }
+      spark.lastTime = 0; // Spark 见到 0 会把这一帧的 deltaTime 当成 0
+      frames = 0;
+      lastFpsAt = performance.now();
+      renderer.setAnimationLoop(frame);
+    };
+    const io = new IntersectionObserver(([entry]) => {
+      onScreen = entry.isIntersecting;
+      syncRunning();
     });
+    io.observe(host);
+    document.addEventListener('visibilitychange', syncRunning);
+    syncRunning();
+
+    // ---- GPU 上下文丢失 ----
+    // 显存吃紧（手机上加载百万级高斯最常见，R9）或驱动重置时，浏览器会把整个
+    // WebGL 上下文收回，之后画面静默变黑。不去原地恢复：Spark 内部的纹理和
+    // 渲染目标能不能跟着重建，从外面验证不了；给一张说明卡 + 重载按钮最可靠。
+    const onContextLost = (e: Event) => {
+      // 不 preventDefault 的话上下文就彻底死了，restored 事件永远不会来。
+      // 我们不靠它恢复，但留着这条路不碍事。
+      e.preventDefault();
+      lost = true;
+      syncRunning();
+      // Chrome 会把失去上下文的画布画成一整块白，舞台上的浅色说明文字就看不见了
+      renderer.domElement.style.visibility = 'hidden';
+      fatalRef.current = true;
+      setFailure({
+        kind: 'context-lost',
+        msg: '显卡把绘图上下文收回了，画面停在这里。通常是显存不够（场景太大、同时开了别的 3D 页面），也可能是显卡驱动重置了',
+      });
+      setStatus('error');
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 
     return () => {
       renderer.setAnimationLoop(null);
+      io.disconnect();
+      document.removeEventListener('visibilitychange', syncRunning);
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       ro.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
@@ -735,6 +891,9 @@ export function SplatViewer() {
     core.orbit.enabled = !fly;
     core.spark.fpsMovement.enable = fly;
     core.spark.pointerControls.enable = fly;
+    // 轨道模式下 spark.update 不被调用，lastTime 停在切走的那一刻；
+    // 不清零的话，切回来第一帧的 deltaTime 就是整段轨道模式的时长。
+    if (fly) core.spark.lastTime = 0;
     if (!fly) {
       // 从飞行切回轨道：把 target 放到相机正前方一个场景半径处，
       // 否则 OrbitControls 会绕着上次那个早已不在视野里的目标转。
@@ -747,12 +906,13 @@ export function SplatViewer() {
   // ---- 资产加载 ----
   useEffect(() => {
     const core = coreRef.current;
-    if (!core) return;
+    // 渲染器坏了就别再往上面加载东西：状态保持 error，说明卡留在原地。
+    if (!core || fatalRef.current) return;
     let cancelled = false;
 
     setStatus('loading');
     setProgress(0);
-    setError('');
+    setFailure(null);
     setInfo(null);
     playRef.current = null;
     tweenRef.current = null;
@@ -781,8 +941,16 @@ export function SplatViewer() {
         if (sourceKey.startsWith('builtin:')) {
           const b = BUILTINS.find((x) => x.key === sourceKey.slice(8));
           if (!b) throw new Error(`没有这个内置资产：${sourceKey}`);
+          const url = `${base}splats/${b.file}`;
+          const pre = await preflight(url);
+          if (cancelled) return;
+          if (pre) {
+            setFailure(pre);
+            setStatus('error');
+            return;
+          }
           mesh = new SplatMesh({
-            url: `${base}splats/${b.file}`,
+            url,
             onProgress: (e) => {
               if (!cancelled) setProgress(e.lengthComputable && e.total > 0 ? e.loaded / e.total : 0);
             },
@@ -797,7 +965,11 @@ export function SplatViewer() {
         } else {
           const id = sourceKey.slice(6);
           const rec = await getRecent(id);
-          if (!rec) throw new Error('这个文件已经不在浏览器缓存里了，重新拖一次');
+          if (!rec) {
+            setFailure({ kind: 'missing', msg: '这个文件已经不在浏览器缓存里了，重新拖一次' });
+            setStatus('error');
+            return;
+          }
           if (cancelled) return;
           // 本地文件没有下载阶段，onProgress 不会触发；解析期间只能给个忙碌态。
           setProgress(0);
@@ -829,8 +1001,9 @@ export function SplatViewer() {
         });
         setStatus('ready');
       } catch (e: unknown) {
-        if (cancelled) return;
-        setError(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+        // 上下文丢失时 Spark 也可能跟着抛错，别让它盖掉更要紧的那张说明卡
+        if (cancelled || fatalRef.current) return;
+        setFailure(explainLoadError(e));
         setStatus('error');
       }
     })();
@@ -904,8 +1077,9 @@ export function SplatViewer() {
     const f = files?.[0];
     if (!f) return;
     const ok = /\.(sog|ply|spz|splat|ksplat)$/i.test(f.name);
+    if (fatalRef.current) return;
     if (!ok) {
-      setError(`不认识的后缀：${f.name}。支持 .sog / .ply / .spz / .splat / .ksplat`);
+      setFailure({ kind: 'parse', msg: `不认识的后缀：${f.name}。支持 .sog / .ply / .spz / .splat / .ksplat` });
       setStatus('error');
       return;
     }
@@ -1311,8 +1485,8 @@ export function SplatViewer() {
         <div className="meta">
           <div className="section-head" style={{ border: 'none', paddingBottom: 0 }}>
             <span className="label">状态 / STATUS</span>
-            <span className="label" style={{ color: fps >= 30 ? undefined : 'var(--hot)' }}>
-              {fmt(fps, 0)} FPS
+            <span className="label" style={{ color: paused || fps >= 30 ? undefined : 'var(--hot)' }}>
+              {paused ? '已暂停' : `${fmt(fps, 0)} FPS`}
             </span>
           </div>
 
@@ -1328,10 +1502,10 @@ export function SplatViewer() {
             </>
           )}
 
-          {status === 'error' && (
+          {status === 'error' && failure && (
             <div className="meta-row">
               <span className="label err">出错</span>
-              <span className="err">{error}</span>
+              <span className="err">{FAIL_TITLE[failure.kind]}</span>
             </div>
           )}
 
@@ -1441,18 +1615,9 @@ export function SplatViewer() {
               <span className="label">
                 {builtin?.key ?? recent?.name ?? ''} 加载中{progress > 0 ? ` ${fmt(progress * 100, 0)}%` : '…'}
               </span>
-            ) : (
-              <div style={{ maxWidth: '46ch' }}>
-                <div className="label err" style={{ marginBottom: 'var(--s3)' }}>加载失败</div>
-                <p style={{ margin: 0, fontSize: '0.9375rem' }}>{error}</p>
-                <p style={{ marginTop: 'var(--s3)', fontSize: '0.875rem', opacity: 0.75 }}>
-                  public/splats/ 下的二进制都不进 git。刚克隆的机器先跑
-                  <code> pipeline/scripts/04_export.sh --publish </code>
-                  把资产生成出来；资产确实在却还是失败，就按资产列表从上到下换着试，
-                  能分清是渲染代码、SOG 路径还是自产 PLY 的问题。
-                </p>
-              </div>
-            )}
+            ) : failure ? (
+              <FailureCard failure={failure} builtin={!!builtin} />
+            ) : null}
           </div>
         )}
 
@@ -1464,6 +1629,62 @@ export function SplatViewer() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+const FAIL_TITLE: Record<FailKind, string> = {
+  missing: '找不到资产',
+  fetch: '下载失败',
+  parse: '解析失败',
+  webgl2: 'WebGL2 用不了',
+  'context-lost': 'GPU 上下文丢失',
+};
+
+/** 画布中央的出错说明：原因 + 按类别给的下一步 + 原始报错（排查用）。 */
+function FailureCard({ failure, builtin }: { failure: Failure; builtin: boolean }) {
+  const small = { marginTop: 'var(--s3)', fontSize: '0.875rem', opacity: 0.75 } as const;
+  return (
+    <div style={{ maxWidth: '46ch' }}>
+      <div className="label err" style={{ marginBottom: 'var(--s3)' }}>{FAIL_TITLE[failure.kind]}</div>
+      <p style={{ margin: 0, fontSize: '0.9375rem' }}>{failure.msg}</p>
+
+      {failure.kind === 'missing' && builtin && (
+        <p style={small}>
+          public/splats/ 下的二进制都不进 git。刚克隆的机器先跑
+          <code> pipeline/scripts/04_export.sh --publish </code>
+          把资产生成出来。线上出现这个，就是部署时漏传了 splats/ 目录。
+        </p>
+      )}
+      {failure.kind === 'parse' && builtin && (
+        <p style={small}>
+          按资产列表从上到下换着试，能分清是渲染代码、SOG 格式还是自产 PLY 的问题。
+        </p>
+      )}
+      {failure.kind === 'webgl2' && (
+        <p style={small}>
+          Chrome / Edge：设置 → 系统 → 打开「使用图形加速功能」后重启浏览器；
+          地址栏打开 <code>chrome://gpu</code> 能看到 WebGL2 是不是被禁用了。
+        </p>
+      )}
+      {failure.kind === 'context-lost' && (
+        <>
+          <p style={small}>关掉别的 3D 页面再重载；手机上建议换一个高斯更少的资产。</p>
+          <button
+            className="btn"
+            style={{ marginTop: 'var(--s3)' }}
+            onClick={() => window.location.reload()}
+          >
+            重新加载页面
+          </button>
+        </>
+      )}
+
+      {failure.raw && (
+        <p style={{ ...small, fontFamily: 'var(--font-mono)', fontSize: '0.75rem', wordBreak: 'break-all' }}>
+          {failure.raw}
+        </p>
+      )}
     </div>
   );
 }
