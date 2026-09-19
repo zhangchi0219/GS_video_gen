@@ -220,6 +220,90 @@ const fmtVec = (v: number[] | THREE.Vector3 | undefined) => {
 const fmtBytes = (b: number) => (b >= 1048576 ? `${fmt(b / 1048576, 1)} MB` : `${fmt(b / 1024, 0)} KB`);
 const FOV = 60;
 
+// ============================================================
+// 测量
+// ============================================================
+
+type Vec3 = [number, number, number];
+/** 一段测量。端点存在 mesh 的**对象空间**：翻转开关会改 mesh 的朝向，
+ *  存世界坐标的话一勾翻转，测量线就和场景脱开了。 */
+type Measure = { a: Vec3; b: Vec3 };
+
+/** AnySplat 从普通照片前馈重建，只有相对尺度、没有米制 ——
+ *  riverview 的半径 4.11 只是个模型内部的数。量真实尺寸必须先拿一段已知长度标定。 */
+type Calib = { cmPerUnit: number; refCm: number };
+
+const dist3 = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+function fmtLen(d: number, calib: Calib | null): string {
+  if (!calib) return `${fmt(d, 3)} u`;
+  const cm = d * calib.cmPerUnit;
+  return cm >= 100 ? `${fmt(cm / 100, 2)} m` : `${fmt(cm, 1)} cm`;
+}
+
+/** 点击和拖动的分界：按下到抬起移动超过这么多像素就当作转视角，不落点。 */
+const CLICK_SLOP_PX = 4;
+/** 叠加层（坐标轴、测量线）永远画在 splat 上面：splat 是半透明混合，
+ *  不按深度遮挡线段，与其让线时隐时现，不如始终可见。 */
+const OVERLAY_ORDER = 1000;
+const AXIS_COLORS = ['#E5484D', '#46A758', '#3E7BFA'];
+
+/** 端点的圆点贴图：画布上画一个白边红心的圆，比 PointsMaterial 默认的方块好认。 */
+function makeDotTexture(): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d')!;
+  g.beginPath();
+  g.arc(16, 16, 13, 0, Math.PI * 2);
+  g.fillStyle = '#F3F0E9';
+  g.fill();
+  g.beginPath();
+  g.arc(16, 16, 8, 0, Math.PI * 2);
+  g.fillStyle = '#E63E27';
+  g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** 清空 group 并释放子对象的几何体和材质（贴图是共用的，不在这里释放）。 */
+function disposeChildren(group: THREE.Group) {
+  for (const child of [...group.children]) {
+    group.remove(child);
+    const o = child as THREE.Mesh;
+    o.geometry?.dispose();
+    (o.material as THREE.Material | undefined)?.dispose();
+  }
+}
+
+/** 按当前测量结果重建叠加层：所有线段一个 LineSegments，所有端点一个 Points。 */
+function buildMeasureOverlay(group: THREE.Group, dot: THREE.Texture, measures: Measure[], pending: Vec3 | null) {
+  disposeChildren(group);
+  const common = { depthTest: false, depthWrite: false, transparent: true } as const;
+
+  if (measures.length) {
+    const seg = new THREE.BufferGeometry();
+    seg.setAttribute('position', new THREE.Float32BufferAttribute(measures.flatMap((m) => [...m.a, ...m.b]), 3));
+    const line = new THREE.LineSegments(seg, new THREE.LineBasicMaterial({ color: '#E63E27', ...common }));
+    line.renderOrder = OVERLAY_ORDER;
+    line.frustumCulled = false;
+    group.add(line);
+  }
+
+  const pts = measures.flatMap((m) => [...m.a, ...m.b]).concat(pending ?? []);
+  if (pts.length) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const points = new THREE.Points(
+      geo,
+      new THREE.PointsMaterial({ size: 14, sizeAttenuation: false, map: dot, alphaTest: 0.5, ...common }),
+    );
+    points.renderOrder = OVERLAY_ORDER + 1;
+    points.frustumCulled = false;
+    group.add(points);
+  }
+}
+
 type Status = 'loading' | 'ready' | 'error';
 type CameraMode = 'orbit' | 'fly';
 
@@ -282,6 +366,44 @@ export function SplatViewer() {
   const playRef = useRef<{ t0: number; dur: number; loop: boolean } | null>(null);
   const tweenRef = useRef<{ from: Pose; to: Pose; t0: number; dur: number } | null>(null);
   const modeRef = useRef<CameraMode>('orbit');
+
+  // ---- 测量 ----
+  const [measureOn, setMeasureOn] = useState(false);
+  const [showAxes, setShowAxes] = useState(true);
+  const [measures, setMeasures] = useState<Measure[]>([]);
+  const [pending, setPending] = useState<Vec3 | null>(null);
+  const [pickOpacity, setPickOpacity] = useState(0.2);
+  const [pickNote, setPickNote] = useState('');
+  const [calib, setCalib] = useState<Calib | null>(null);
+  const [calibIdx, setCalibIdx] = useState(0);
+  const [calibCm, setCalibCm] = useState('');
+
+  const measureOnRef = useRef(false);
+  const measuresRef = useRef<Measure[]>([]);
+  const pendingRef = useRef<Vec3 | null>(null);
+  const overlayRef = useRef<{ axes: THREE.AxesHelper; group: THREE.Group; dot: THREE.Texture } | null>(null);
+  /** 画布上的 HTML 标签，由渲染循环每帧投影定位，不走 React 重渲染。 */
+  const measureLabelEls = useRef<(HTMLDivElement | null)[]>([]);
+  const axisLabelEls = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    measureOnRef.current = measureOn;
+    if (!measureOn) {
+      pendingRef.current = null;
+      setPending(null);
+    }
+  }, [measureOn]);
+  useEffect(() => {
+    measuresRef.current = measures;
+  }, [measures]);
+  useEffect(() => {
+    if (meshRef.current) meshRef.current.minRaycastOpacity = pickOpacity;
+  }, [pickOpacity, status]);
+  useEffect(() => {
+    if (!pickNote) return;
+    const t = setTimeout(() => setPickNote(''), 2500);
+    return () => clearTimeout(t);
+  }, [pickNote]);
 
   useEffect(() => {
     keysRef.current = keys;
@@ -418,6 +540,84 @@ export function SplatViewer() {
 
     coreRef.current = { renderer, scene, camera, orbit, spark };
 
+    // ---- 叠加层：坐标轴放世界空间，测量线的 group 每帧拷 mesh 的世界矩阵 ----
+    const axes = new THREE.AxesHelper(1);
+    const axesMat = axes.material as THREE.LineBasicMaterial;
+    axesMat.depthTest = false;
+    axesMat.depthWrite = false;
+    axesMat.transparent = true;
+    axes.renderOrder = OVERLAY_ORDER;
+    axes.visible = false;
+    axes.setColors(...(AXIS_COLORS.map((c) => new THREE.Color(c)) as [THREE.Color, THREE.Color, THREE.Color]));
+    scene.add(axes);
+
+    const group = new THREE.Group();
+    group.matrixAutoUpdate = false;
+    scene.add(group);
+    overlayRef.current = { axes, group, dot: makeDotTexture() };
+
+    // ---- 点击落测量点。OrbitControls / SparkControls 也在同一个 canvas 上听拖动，
+    //      所以只认「按下和抬起几乎在同一处」的点击，拖动照常交给它们转视角。 ----
+    const raycaster = new THREE.Raycaster();
+    const down = { x: 0, y: 0 };
+    const onPointerDown = (e: PointerEvent) => {
+      down.x = e.clientX;
+      down.y = e.clientY;
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.button !== 0 || !measureOnRef.current || playRef.current) return;
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX) return;
+      const mesh = meshRef.current;
+      if (!mesh) return;
+      // Spark 的射线拾取按 context.numSplats 遍历，而这个值要等 SparkRenderer 渲染过
+      // 一帧才填上。刚切资产、还没出第一帧就点，会静默地什么都打不中。
+      if (!mesh.context?.numSplats?.value) {
+        setPickNote('场景还没渲染出来，稍等一下再点');
+        return;
+      }
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      // 结果按距离排好序，第一个就是视线上最近的、不透明度过线的高斯。
+      const hit = raycaster.intersectObject(mesh, false)[0];
+      if (!hit) {
+        setPickNote('没点中。可能是点在了空处，可能是高斯不够不透明（调低阈值），也可能是高斯太小、射线从缝里穿过去了 —— 最后一种调阈值没用，换个更近的表面再点');
+        return;
+      }
+      mesh.updateMatrixWorld(true);
+      const p = mesh.worldToLocal(hit.point.clone()).toArray() as Vec3;
+      const a = pendingRef.current;
+      if (a) {
+        pendingRef.current = null;
+        setPending(null);
+        setMeasures((m) => [...m, { a, b: p }]);
+      } else {
+        pendingRef.current = p;
+        setPending(p);
+      }
+    };
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+    const tmp = new THREE.Vector3();
+    /** 把世界坐标投到画布上，摆一个 HTML 标签；在相机背后就藏起来。 */
+    const placeLabel = (el: HTMLDivElement | null | undefined, world: THREE.Vector3) => {
+      if (!el) return;
+      tmp.copy(world).project(camera);
+      if (tmp.z > 1 || tmp.z < -1) {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = '';
+      const x = ((tmp.x + 1) / 2) * host.clientWidth;
+      const y = ((1 - tmp.y) / 2) * host.clientHeight;
+      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+    };
+    const mid = new THREE.Vector3();
+
     const ro = new ResizeObserver(() => {
       const w = host.clientWidth;
       const h = host.clientHeight;
@@ -469,7 +669,34 @@ export function SplatViewer() {
         orbit.update();
       }
 
+      // 测量线跟着 mesh 走（翻转开关只改 mesh 的朝向）
+      const mesh = meshRef.current;
+      if (mesh) {
+        group.matrix.copy(mesh.matrixWorld);
+        group.matrixWorldNeedsUpdate = true;
+      }
+      group.visible = !!mesh;
+
       renderer.render(scene, camera);
+
+      // 标签在 render 之后摆：此时 matrixWorld 和相机都是这一帧的最终值。
+      if (mesh) {
+        const ms = measuresRef.current;
+        for (let i = 0; i < ms.length; i++) {
+          mid.set(
+            (ms[i].a[0] + ms[i].b[0]) / 2,
+            (ms[i].a[1] + ms[i].b[1]) / 2,
+            (ms[i].a[2] + ms[i].b[2]) / 2,
+          ).applyMatrix4(group.matrixWorld);
+          placeLabel(measureLabelEls.current[i], mid);
+        }
+      }
+      if (axes.visible) {
+        for (let i = 0; i < 3; i++) {
+          mid.set(i === 0 ? 1.08 : 0, i === 1 ? 1.08 : 0, i === 2 ? 1.08 : 0).applyMatrix4(axes.matrixWorld);
+          placeLabel(axisLabelEls.current[i], mid);
+        }
+      }
 
       frames++;
       if (now - lastFpsAt >= 500) {
@@ -482,6 +709,12 @@ export function SplatViewer() {
     return () => {
       renderer.setAnimationLoop(null);
       ro.disconnect();
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      disposeChildren(group);
+      axes.dispose();
+      overlayRef.current?.dot.dispose();
+      overlayRef.current = null;
       orbit.dispose();
       meshRef.current?.dispose();
       meshRef.current = null;
@@ -524,6 +757,11 @@ export function SplatViewer() {
     playRef.current = null;
     tweenRef.current = null;
     setPlaying(false);
+    // 测量和标定都只属于上一个场景：每个场景的尺度都不一样。
+    pendingRef.current = null;
+    setPending(null);
+    setMeasures([]);
+    setCalib(null);
 
     if (meshRef.current) {
       core.scene.remove(meshRef.current);
@@ -616,6 +854,50 @@ export function SplatViewer() {
     computeFraming(mesh, metaRef.current);
     applyFraming();
   }, [flipX, status, applyFraming, computeFraming]);
+
+  // ---- 坐标轴：放在取景中心，长度取场景半径的一半 ----
+  // 必须排在上面那个翻转 effect 之后：它先重算 frameRef，这里再读。
+  useEffect(() => {
+    const axes = overlayRef.current?.axes;
+    if (!axes) return;
+    const ready = status === 'ready' && showAxes;
+    axes.visible = ready;
+    if (!ready) return;
+    const { center, radius } = frameRef.current;
+    axes.position.copy(center);
+    axes.scale.setScalar(radius * 0.5);
+  }, [showAxes, status, flipX]);
+
+  // ---- 测量线 ----
+  useEffect(() => {
+    const ov = overlayRef.current;
+    if (!ov) return;
+    buildMeasureOverlay(ov.group, ov.dot, measures, pending);
+  }, [measures, pending]);
+
+  // 测量中按 Esc 丢掉已选的起点
+  useEffect(() => {
+    if (!measureOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        pendingRef.current = null;
+        setPending(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [measureOn]);
+
+
+  const applyCalib = useCallback(() => {
+    // 删掉几段后 calibIdx 可能越界，和下拉框显示的一样夹到最后一段。
+    const m = measures[Math.min(calibIdx, measures.length - 1)];
+    const cm = Number(calibCm);
+    if (!m || !(cm > 0)) return;
+    const d = dist3(m.a, m.b);
+    if (d <= 0) return;
+    setCalib({ cmPerUnit: cm / d, refCm: cm });
+  }, [measures, calibIdx, calibCm]);
 
   // ---- 上传 ----
   const acceptFiles = useCallback(async (files: FileList | null) => {
@@ -825,6 +1107,146 @@ export function SplatViewer() {
           </div>
         </section>
 
+        {/* ---- 测量 ---- */}
+        <section className="section">
+          <div className="section-head">
+            <span className="label">测量 / MEASURE</span>
+            <span className="label unit">{calib ? `标定 ${fmt(calib.cmPerUnit, 2)} cm/u` : '场景单位 u'}</span>
+          </div>
+
+          <div className="row">
+            <button
+              className="btn"
+              data-on={measureOn}
+              disabled={status !== 'ready'}
+              onClick={() => setMeasureOn((v) => !v)}
+            >
+              {measureOn ? '测量中' : '开始测量'}
+            </button>
+            <button className="btn" data-on={showAxes} onClick={() => setShowAxes((v) => !v)}>
+              XYZ 轴
+            </button>
+            <button
+              className="btn"
+              disabled={measures.length === 0 && !pending}
+              onClick={() => {
+                pendingRef.current = null;
+                setPending(null);
+                setMeasures([]);
+              }}
+            >
+              清空
+            </button>
+          </div>
+
+          {status === 'ready' && info && (
+            <div className="meta-row">
+              <span className="label">包围盒 X×Y×Z</span>
+              <span>
+                {[0, 1, 2]
+                  .map((i) => fmtLen(Math.abs(info.box.max[i] - info.box.min[i]), calib))
+                  .join(' × ')}
+              </span>
+            </div>
+          )}
+
+          {measures.length > 0 && (
+            <div className="keys">
+              {measures.map((m, i) => {
+                // 各轴分量取绝对值。端点虽在对象空间，但翻转开关只是绕 X 转 180°，
+                // 只改 y/z 的符号，取了绝对值就和世界轴上的分量一样。
+                const [dx, dy, dz] = [0, 1, 2].map((k) => Math.abs(m.b[k] - m.a[k]));
+                return (
+                  <div className="key measure" key={i}>
+                    <span className="label key-i">{String(i + 1).padStart(2, '0')}</span>
+                    <span className="measure-body">
+                      <span className="measure-len">{fmtLen(dist3(m.a, m.b), calib)}</span>
+                      <span className="label unit measure-axes">
+                        <i style={{ color: AXIS_COLORS[0] }}>X</i> {fmtLen(dx, calib)}{' '}
+                        <i style={{ color: AXIS_COLORS[1] }}>Y</i> {fmtLen(dy, calib)}{' '}
+                        <i style={{ color: AXIS_COLORS[2] }}>Z</i> {fmtLen(dz, calib)}
+                      </span>
+                    </span>
+                    <button
+                      className="key-x"
+                      title="删掉这一段"
+                      onClick={() => setMeasures((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {measures.length > 0 && (
+            <div className="field">
+              <span className="label">标定</span>
+              <select
+                className="input"
+                value={Math.min(calibIdx, measures.length - 1)}
+                onChange={(e) => setCalibIdx(Number(e.target.value))}
+              >
+                {measures.map((_, i) => (
+                  <option key={i} value={i}>
+                    #{String(i + 1).padStart(2, '0')}
+                  </option>
+                ))}
+              </select>
+              <span className="label">实长</span>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                step="any"
+                placeholder="cm"
+                value={calibCm}
+                onChange={(e) => setCalibCm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') applyCalib();
+                }}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <button
+                className="btn"
+                disabled={!(Number(calibCm) > 0)}
+                onClick={applyCalib}
+              >
+                设定
+              </button>
+            </div>
+          )}
+          {calib && (
+            <div className="row">
+              <span className="label unit" style={{ flex: 1 }}>
+                1 u = {fmt(calib.cmPerUnit, 2)} cm（按 {fmt(calib.refCm, 1)} cm 的参照）
+              </span>
+              <button className="btn" onClick={() => setCalib(null)}>
+                取消标定
+              </button>
+            </div>
+          )}
+
+          <div className="field">
+            <span className="label">拾取阈值</span>
+            <input
+              type="range"
+              min={0.02}
+              max={0.9}
+              step={0.01}
+              value={pickOpacity}
+              onChange={(e) => setPickOpacity(Number(e.target.value))}
+            />
+            <span className="label">{fmt(pickOpacity, 2)}</span>
+          </div>
+          <span className="label">
+            {measures.length === 0
+              ? '重建没有真实尺度：量一段已知长度（门宽、A4 纸）填进「实长」，之后读数换成厘米'
+              : '点中的是视线上第一个不透明度过线的高斯；落在雾上就调高阈值'}
+          </span>
+        </section>
+
         {/* ---- 关键帧路径 ---- */}
         <section className="section">
           <div className="section-head">
@@ -951,6 +1373,7 @@ export function SplatViewer() {
       {/* ---- 画布 ---- */}
       <main
         className="stage"
+        data-measure={measureOn && status === 'ready'}
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -963,6 +1386,48 @@ export function SplatViewer() {
         }}
       >
         <div ref={hostRef} style={{ position: 'absolute', inset: 0 }} />
+
+        {/* 画布上的标签：位置由渲染循环每帧写 transform */}
+        {status === 'ready' && (
+          <div className="stage-labels">
+            {showAxes &&
+              ['X', 'Y', 'Z'].map((a, i) => (
+                <div
+                  key={a}
+                  className="axis-label"
+                  style={{ color: AXIS_COLORS[i] }}
+                  ref={(el) => {
+                    axisLabelEls.current[i] = el;
+                  }}
+                >
+                  {a}
+                </div>
+              ))}
+            {measures.map((m, i) => (
+              <div
+                key={i}
+                className="measure-label"
+                ref={(el) => {
+                  measureLabelEls.current[i] = el;
+                }}
+              >
+                {fmtLen(dist3(m.a, m.b), calib)}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {measureOn && status === 'ready' && (
+          <div className="stage-hint stage-hint-left">
+            {pending ? '已选起点 · 再点一下终点 · ESC 取消' : '点两下量一段 · 拖动照常转视角'}
+            {pickNote && (
+              <>
+                <br />
+                <span className="err">{pickNote}</span>
+              </>
+            )}
+          </div>
+        )}
 
         <button className="stage-toggle" onClick={() => setCollapsed((c) => !c)}>
           {collapsed ? '展开面板 →' : '← 收起面板'}

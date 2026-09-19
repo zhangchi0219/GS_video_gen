@@ -247,6 +247,43 @@ body { overflow: hidden; }
   backdrop-filter: blur(6px);
 }
 
+/* 测量提示放左下，和右下的飞行提示错开 */
+.stage-hint-left { right: auto; left: var(--s3); }
+
+/* — 测量 ——————————————————————————————————————————— */
+.stage[data-measure="true"] canvas { cursor: crosshair; }
+
+/* 标签层整个不接鼠标，否则会挡住画布上的点击和拖动 */
+.stage-labels { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.stage-labels > div { position: absolute; top: 0; left: 0; white-space: nowrap; will-change: transform; }
+.axis-label {
+  font: 700 0.875rem/1 var(--font-mono);
+  text-shadow: 0 0 3px var(--stage), 0 0 3px var(--stage);
+}
+.measure-label {
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--hot);
+  color: var(--on-hot);
+  font: 500 var(--fs-label)/1.2 var(--font-mono);
+}
+
+.measure { border-radius: 16px; }
+.measure-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.measure-len { font: 700 1rem/1.2 var(--font-display); }
+/* .label 默认全大写，单位 cm / u 大写就读错了 */
+.unit { text-transform: none; }
+.measure-axes i { font-style: normal; font-weight: 700; }
+
+.input {
+  padding: var(--s1) var(--s2);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  font: 500 var(--fs-label)/1.4 var(--font-mono);
+}
+
 .bar { height: 3px; border-radius: 2px; background: rgba(231, 226, 212, 0.2); overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--hot); transition: width 0.15s ease; }
 
