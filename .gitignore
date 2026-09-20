@@ -26,11 +26,13 @@ web/dist/
 # tsc -b 的增量编译缓存
 *.tsbuildinfo
 
-# web 的 splat 资产：二进制一律不进 git（butterfly.* 是一次性下载的官方参照，
-# riverview.sog 台式机自己跑 04_export.sh 就能生成）。同名 .json 只有几 KB，
-# 是前端定相机要用的，必须进 git —— 写法同 pipeline/data，先排内容再放回来。
+# web 的 splat 资产：.sog 成品进 git，这样两台机器直接 git pull 就能拿到，
+# 不用再走 NAS / scp（§4）。单个超过 30 MB 的就别提交了，只在部署时上传。
+# butterfly.spz 之类的其它二进制格式仍然不进（那是一次性下载的官方参照）。
+# 同名 .json 只有几 KB，是前端定相机要用的 —— 写法同 pipeline/data，先排内容再放回来。
 web/public/splats/**
 !web/public/splats/*.json
+!web/public/splats/*.sog
 
 # 编译日志
 *.build.log
